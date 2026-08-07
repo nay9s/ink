@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -20,6 +20,7 @@ import 'adaptive_pdf_page.dart';
 import 'ink_painter.dart';
 import 'native_pdf_document_view.dart';
 import 'native_pdf_ink_importer.dart';
+import 'native_pdf_page_display.dart';
 import 'page_strip.dart';
 import 'toolbar.dart';
 
@@ -4220,26 +4221,74 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                                           _pagePdfPageNumbers[
                                                                   pageIndex] !=
                                                               null)
-                                                        AdaptivePdfPage(
-                                                          key: ValueKey(
-                                                            '${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
-                                                          ),
-                                                          pdfPath:
-                                                              _pagePdfPaths[pageIndex]!,
-                                                          pageNumber:
-                                                              _pagePdfPageNumbers[
-                                                                  pageIndex]!,
-                                                          enabled: (pageIndex -
-                                                                      _currentPageIndex)
-                                                                  .abs() <=
-                                                              4,
-                                                          // The Flutter drawing fallback keeps one
-                                                          // stable raster size for every nearby page.
-                                                          // It never changes page geometry or swaps a
-                                                          // page to a smaller preview when focus moves.
-                                                          quality: 1,
-                                                          renderScale: 1,
-                                                        )
+                                                        if (isCurrent &&
+                                                            !_verticalPageMode &&
+                                                            defaultTargetPlatform ==
+                                                                TargetPlatform
+                                                                    .iOS)
+                                                          // Current page, single-page view mode,
+                                                          // iOS: swap the raster fallback for a
+                                                          // native PDFView resized to match the
+                                                          // current zoom bucket. The 1/bucket scale
+                                                          // cancels the resize locally (visual
+                                                          // footprint stays paperWidth, matching
+                                                          // every other layer here), so
+                                                          // InteractiveViewer's own live zoom still
+                                                          // applies exactly once on top — this only
+                                                          // changes what resolution PDFKit renders
+                                                          // at, not alignment.
+                                                          Align(
+                                                            alignment:
+                                                                Alignment
+                                                                    .topLeft,
+                                                            child:
+                                                                Transform.scale(
+                                                              scale: 1 /
+                                                                  _pdfRenderScaleBucket,
+                                                              alignment:
+                                                                  Alignment
+                                                                      .topLeft,
+                                                              child: SizedBox(
+                                                                width: paperWidth *
+                                                                    _pdfRenderScaleBucket,
+                                                                height: paperHeight *
+                                                                    _pdfRenderScaleBucket,
+                                                                child:
+                                                                    NativePdfPageDisplay(
+                                                                  key: ValueKey(
+                                                                    'native-${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
+                                                                  ),
+                                                                  path: _pagePdfPaths[
+                                                                      pageIndex]!,
+                                                                  pageNumber:
+                                                                      _pagePdfPageNumbers[
+                                                                          pageIndex]!,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          )
+                                                        else
+                                                          AdaptivePdfPage(
+                                                            key: ValueKey(
+                                                              '${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
+                                                            ),
+                                                            pdfPath:
+                                                                _pagePdfPaths[pageIndex]!,
+                                                            pageNumber:
+                                                                _pagePdfPageNumbers[
+                                                                    pageIndex]!,
+                                                            enabled: (pageIndex -
+                                                                        _currentPageIndex)
+                                                                    .abs() <=
+                                                                4,
+                                                            // The Flutter drawing fallback keeps one
+                                                            // stable raster size for every nearby page.
+                                                            // It never changes page geometry or swaps a
+                                                            // page to a smaller preview when focus moves.
+                                                            quality: 1,
+                                                            renderScale:
+                                                                _pdfRenderScaleBucket,
+                                                          )
                                                       else if (_pageBackgrounds[
                                                               pageIndex] !=
                                                           null)
