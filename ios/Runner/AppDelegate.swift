@@ -339,6 +339,7 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
   private var activeWidth: CGFloat = 2.5
   private var activeEraserMode = "precision"
   private var allowFinger = false
+  private var resolvedPanGestureRecognizer: UIPanGestureRecognizer?
 
   private var activeInputPage: PDFPage?
   private weak var activeInputOverlay: NativeInkOverlayView?
@@ -517,20 +518,43 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     }
   }
 
+  /// PDFKit's built-in single-finger pan recognizer, found by scanning the
+  /// view's own gesture recognizers. Pinch-to-zoom is a separate
+  /// UIPinchGestureRecognizer PDFKit manages independently, so this scan
+  /// never touches it. The result isn't cached when nil, in case PDFKit
+  /// hasn't attached its recognizers yet on first access.
+  private func nativePanGestureRecognizer() -> UIPanGestureRecognizer? {
+    if let cached = resolvedPanGestureRecognizer { return cached }
+    let found = pdfView.gestureRecognizers?
+      .compactMap { $0 as? UIPanGestureRecognizer }
+      .first
+    resolvedPanGestureRecognizer = found
+    return found
+  }
+
   private func updateInputPolicy() {
     let nativeInkTools: Set<String> = [
       "pen", "fountainPen", "brushPen", "highlighter", "eraser",
     ]
     let acceptsInk = nativeInkTools.contains(activeTool)
     inkInput.isEnabled = acceptsInk
-    if !acceptsInk { return }
 
-    inkInput.allowedTouchTypes = allowFinger
+    // A non-Apple stylus is reported by iOS as a plain `.direct` touch,
+    // indistinguishable from a finger. When "Draw with finger" is on, a
+    // single touch of either kind draws, so panning is pushed to a
+    // two-finger drag instead of relying on touch-type detection. Apple
+    // Pencil users (the default, allowFinger == false) see no change: the
+    // ink recognizer only ever receives `.stylus` touches, so finger
+    // scrolling keeps working untouched.
+    let requiresTwoFingerPan = acceptsInk && allowFinger
+    inkInput.allowedTouchTypes = requiresTwoFingerPan
       ? [
           NSNumber(value: UITouch.TouchType.stylus.rawValue),
           NSNumber(value: UITouch.TouchType.direct.rawValue),
         ]
       : [NSNumber(value: UITouch.TouchType.stylus.rawValue)]
+    nativePanGestureRecognizer()?.minimumNumberOfTouches =
+      requiresTwoFingerPan ? 2 : 1
   }
 
   private func goToPage(_ pageIndex: Int) {
