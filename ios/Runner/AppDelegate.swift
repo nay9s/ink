@@ -1443,7 +1443,7 @@ final class NativePdfInkImporter: NSObject {
     // restore full alpha so the imported stroke goes through Dart's own
     // highlighter alpha handling once, like any freshly drawn highlight,
     // instead of compositing translucency twice.
-    let fullAlphaColor = annotation.color?.withAlphaComponent(1.0)
+    let fullAlphaColor = annotation.color.withAlphaComponent(1.0)
 
     return [
       "pageIndex": pageIndex,
