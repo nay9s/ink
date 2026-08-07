@@ -19,6 +19,7 @@ import '../store.dart';
 import 'adaptive_pdf_page.dart';
 import 'ink_painter.dart';
 import 'native_pdf_document_view.dart';
+import 'native_pdf_ink_importer.dart';
 import 'page_strip.dart';
 import 'toolbar.dart';
 
@@ -178,12 +179,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     return (_currentPageIndex - start).clamp(0, 1 << 20).toInt();
   }
 
-  bool get _showNativePdfReader {
+  // Retired: PDF pages now always render through the same Flutter path mixed
+  // notebooks already used (AdaptivePdfPage + InkPainter, see build()) so ink
+  // lives in _pages like every other page instead of being baked straight
+  // into the PDF file per stroke. _qualifiesForLegacyNativeReader below keeps
+  // the old detection logic alive only so the one-time importer can find
+  // documents that still have ink trapped in native PDF annotations from
+  // before this change.
+  bool get _showNativePdfReader => false;
+
+  bool get _qualifiesForLegacyNativeReader {
     final path = _nativePdfPath;
     if (path == null || _pages.isEmpty) return false;
-    // A single native PDF view can only represent one uninterrupted PDF
-    // document. Mixed notebooks keep their existing pages and render imported
-    // PDF pages inside the Flutter page stack instead of hiding those pages.
+    // A single native PDF view could only ever represent one uninterrupted
+    // PDF document, so this only ever applied to notebooks that are a single
+    // imported PDF cover to cover.
     return _pagePdfPaths.length == _pages.length &&
         _pagePdfPaths.every((item) => item == path) &&
         _pagePdfPageNumbers.length == _pages.length &&
@@ -274,6 +284,37 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     unawaited(_hydrateMissingPageAspectRatios());
 
     unawaited(_restorePersistentEditorState());
+    unawaited(_importLegacyNativeInkIfNeeded());
+  }
+
+  /// Notes edited before PDF-page ink moved into this Flutter layer still
+  /// have real ink baked directly into their PDF file as native
+  /// PDFAnnotations (see _qualifiesForLegacyNativeReader). Recover it once
+  /// so it doesn't silently disappear now that _showNativePdfReader never
+  /// renders the native reader.
+  Future<void> _importLegacyNativeInkIfNeeded() async {
+    if (!_qualifiesForLegacyNativeReader) return;
+    final path = _nativePdfPath;
+    if (path == null) return;
+    final start = _nativePdfStartIndex ?? 0;
+    if (start >= _pages.length) return;
+    // Only worth the native round-trip if this PDF's pages don't already
+    // have ink recorded in the Flutter model.
+    final alreadyHasInk =
+        _pages.sublist(start).any((page) => page.isNotEmpty);
+    if (alreadyHasInk) return;
+
+    final imported = await NativePdfInkImporter.extractStrokes(path);
+    if (imported.isEmpty || !mounted) return;
+
+    setState(() {
+      for (final item in imported) {
+        final pageIndex = start + item.pdfPageIndex;
+        if (pageIndex < 0 || pageIndex >= _pages.length) continue;
+        _pages[pageIndex].add(item.stroke);
+      }
+    });
+    _scheduleSave();
   }
 
   Future<void> _restorePersistentEditorState() async {

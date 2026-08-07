@@ -5,6 +5,10 @@ import UIKit.UIGestureRecognizerSubclass
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+  // Keeps the one-time ink importer's method channel handler alive; nothing
+  // else holds a strong reference to it.
+  private var pdfInkImporter: NativePdfInkImporter?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -19,6 +23,7 @@ import UIKit.UIGestureRecognizerSubclass
         NativePdfViewFactory(messenger: registrar.messenger()),
         withId: "ink_note/native_pdf_view"
       )
+      pdfInkImporter = NativePdfInkImporter(messenger: registrar.messenger())
     }
   }
 }
@@ -62,6 +67,21 @@ final class SelectablePdfView: PDFView {
       return currentSelection?.string?.isEmpty == false
     }
     return super.canPerformAction(action, withSender: sender)
+  }
+}
+
+/// Identifies annotations Ink Note itself created, in a PDF that may also
+/// contain a user's own markup from another app (Preview.app, etc.). Shared
+/// between the live editing engine (NativePdfPlatformView) and the one-time
+/// importer (NativePdfInkImporter) so both use exactly the same rule — an
+/// importer or eraser that used a looser filter could eat a user's own
+/// annotations.
+enum InkNoteAnnotationTag {
+  static let owner = "Ink Note"
+  static let prefix = "ink_note:"
+
+  static func matches(_ annotation: PDFAnnotation) -> Bool {
+    annotation.userName == owner || annotation.contents?.hasPrefix(prefix) == true
   }
 }
 
@@ -361,9 +381,6 @@ private enum NativePdfEdit {
 }
 
 final class NativePdfPlatformView: NSObject, FlutterPlatformView {
-  private static let annotationOwner = "Ink Note"
-  private static let annotationPrefix = "ink_note:"
-
   private let pdfView: SelectablePdfView
   private let channel: FlutterMethodChannel
   private let documentURL: URL?
@@ -1033,16 +1050,15 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
   }
 
   private func configure(_ annotation: PDFAnnotation) {
-    annotation.userName = Self.annotationOwner
-    annotation.contents = Self.annotationPrefix + UUID().uuidString
+    annotation.userName = InkNoteAnnotationTag.owner
+    annotation.contents = InkNoteAnnotationTag.prefix + UUID().uuidString
     annotation.modificationDate = Date()
     annotation.shouldDisplay = true
     annotation.shouldPrint = true
   }
 
   private func isInkNoteAnnotation(_ annotation: PDFAnnotation) -> Bool {
-    annotation.userName == Self.annotationOwner ||
-      annotation.contents?.hasPrefix(Self.annotationPrefix) == true
+    InkNoteAnnotationTag.matches(annotation)
   }
 
   /// Shared by the actual hit-test and the on-screen eraser cursor, so the
@@ -1238,5 +1254,216 @@ extension NativePdfPlatformView: UIGestureRecognizerDelegate {
       return false
     }
     return true
+  }
+}
+
+// MARK: - One-time importer for pre-migration native ink
+
+/// PDF-page ink now lives in Flutter's InkPainter layer instead of being
+/// baked directly into the PDF file per stroke (see editor_screen.dart's
+/// _showNativePdfReader). Notes edited before that change still have real
+/// ink trapped in native PDFAnnotations inside their PDF file. This is a
+/// one-shot, non-interactive extraction: open the PDF directly (no live
+/// PDFView, no gesture engine), pull out only the annotations
+/// InkNoteAnnotationTag identifies as Ink Note's own, remove them from the
+/// file, and hand their geometry back to Dart to reconstruct as InkStroke
+/// data. Much smaller in scope than the live editing engine above.
+final class NativePdfInkImporter: NSObject {
+  static let channelName = "ink_note/pdf_ink_importer"
+
+  private let channel: FlutterMethodChannel
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(name: Self.channelName, binaryMessenger: messenger)
+    super.init()
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "extractAndStrip":
+        let values = call.arguments as? [String: Any]
+        guard let path = values?["path"] as? String, !path.isEmpty else {
+          result(FlutterError(code: "invalid_args", message: "Missing path", details: nil))
+          return
+        }
+        do {
+          result(try self.extractAndStrip(path: path))
+        } catch {
+          result(
+            FlutterError(
+              code: "pdf_ink_import_failed",
+              message: error.localizedDescription,
+              details: nil
+            )
+          )
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func extractAndStrip(path: String) throws -> [[String: Any]] {
+    let url = URL(fileURLWithPath: path)
+    guard let document = PDFDocument(url: url) else {
+      throw NSError(
+        domain: "InkNote.PdfInkImporter",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Could not open the PDF for import."]
+      )
+    }
+
+    var results: [[String: Any]] = []
+    var changed = false
+
+    for pageIndex in 0..<document.pageCount {
+      guard let page = document.page(at: pageIndex) else { continue }
+      let pageBounds = page.bounds(for: .cropBox)
+      var toRemove: [PDFAnnotation] = []
+
+      for annotation in page.annotations {
+        guard InkNoteAnnotationTag.matches(annotation) else { continue }
+
+        if annotation.type == PDFAnnotationSubtype.ink.rawValue,
+           let stroke = extractInkStroke(
+             annotation: annotation,
+             pageIndex: pageIndex,
+             pageBounds: pageBounds
+           ) {
+          results.append(stroke)
+          toRemove.append(annotation)
+        } else if annotation.type == PDFAnnotationSubtype.highlight.rawValue,
+                  let stroke = extractHighlightStroke(
+                    annotation: annotation,
+                    pageIndex: pageIndex,
+                    pageBounds: pageBounds
+                  ) {
+          results.append(stroke)
+          toRemove.append(annotation)
+        }
+      }
+
+      for annotation in toRemove {
+        page.removeAnnotation(annotation)
+        changed = true
+      }
+    }
+
+    if changed {
+      guard let data = document.dataRepresentation() else {
+        throw NSError(
+          domain: "InkNote.PdfInkImporter",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Could not save the PDF after import."]
+        )
+      }
+      try data.write(to: url, options: .atomic)
+    }
+
+    return results
+  }
+
+  /// Committed ink annotations only ever contain moveTo/addLineTo segments
+  /// (see appendFlattenedQuadCurve in NativePdfPlatformView), so reading the
+  /// points back out is a plain polyline walk — no curve reconstruction.
+  private func extractInkStroke(
+    annotation: PDFAnnotation,
+    pageIndex: Int,
+    pageBounds: CGRect
+  ) -> [String: Any]? {
+    guard let path = annotation.paths?.first else { return nil }
+    let origin = annotation.bounds.origin
+    var points: [CGPoint] = []
+    path.cgPath.applyWithBlock { elementPointer in
+      let element = elementPointer.pointee
+      switch element.type {
+      case .moveToPoint, .addLineToPoint:
+        let point = element.points[0]
+        points.append(CGPoint(x: point.x + origin.x, y: point.y + origin.y))
+      default:
+        break
+      }
+    }
+    guard points.count >= 2 else { return nil }
+
+    return [
+      "pageIndex": pageIndex,
+      "tool": "pen",
+      "color": argb(from: annotation.color),
+      "width": Double(annotation.border?.lineWidth ?? 2.5),
+      "pageWidth": Double(pageBounds.width),
+      "pageHeight": Double(pageBounds.height),
+      "points": points.map { [Double($0.x), Double($0.y)] },
+    ]
+  }
+
+  /// Highlight annotations are stored as upper/lower quad corners per
+  /// segment, not a centerline, so the original stroke path is
+  /// approximated from the midpoint between each quad's upper and lower
+  /// edge — close enough to redraw as a highlighter stroke, not a lossless
+  /// reconstruction.
+  private func extractHighlightStroke(
+    annotation: PDFAnnotation,
+    pageIndex: Int,
+    pageBounds: CGRect
+  ) -> [String: Any]? {
+    guard let quads = annotation.quadrilateralPoints, quads.count >= 4 else { return nil }
+    let origin = annotation.bounds.origin
+    var centerline: [CGPoint] = []
+    var widthSum: CGFloat = 0
+    var widthCount = 0
+
+    var index = 0
+    while index + 3 < quads.count {
+      let upperStart = quads[index].cgPointValue
+      let upperEnd = quads[index + 1].cgPointValue
+      let lowerStart = quads[index + 2].cgPointValue
+      let lowerEnd = quads[index + 3].cgPointValue
+
+      if centerline.isEmpty {
+        centerline.append(CGPoint(
+          x: (upperStart.x + lowerStart.x) / 2 + origin.x,
+          y: (upperStart.y + lowerStart.y) / 2 + origin.y
+        ))
+      }
+      centerline.append(CGPoint(
+        x: (upperEnd.x + lowerEnd.x) / 2 + origin.x,
+        y: (upperEnd.y + lowerEnd.y) / 2 + origin.y
+      ))
+      widthSum += hypot(upperStart.x - lowerStart.x, upperStart.y - lowerStart.y)
+      widthCount += 1
+      index += 4
+    }
+
+    guard centerline.count >= 2, widthCount > 0 else { return nil }
+
+    // Baked in at 0.32 alpha when created (see makeHighlightAnnotation);
+    // restore full alpha so the imported stroke goes through Dart's own
+    // highlighter alpha handling once, like any freshly drawn highlight,
+    // instead of compositing translucency twice.
+    let fullAlphaColor = annotation.color?.withAlphaComponent(1.0)
+
+    return [
+      "pageIndex": pageIndex,
+      "tool": "highlighter",
+      "color": argb(from: fullAlphaColor),
+      "width": Double(widthSum / CGFloat(widthCount)),
+      "pageWidth": Double(pageBounds.width),
+      "pageHeight": Double(pageBounds.height),
+      "points": centerline.map { [Double($0.x), Double($0.y)] },
+    ]
+  }
+
+  private func argb(from color: UIColor?) -> Int {
+    guard let color else { return 0xFF000000 }
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+    let a = Int((alpha * 255).rounded())
+    let r = Int((red * 255).rounded())
+    let g = Int((green * 255).rounded())
+    let b = Int((blue * 255).rounded())
+    return (a << 24) | (r << 16) | (g << 8) | b
   }
 }
