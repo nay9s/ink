@@ -378,6 +378,8 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
   private var activeEraserMode = "precision"
   private var allowFinger = false
   private var resolvedPanGestureRecognizer: UIPanGestureRecognizer?
+  private var activeSmoothing: Double = 0.45
+  private var smoothedTouchPoint: CGPoint?
 
   private var activeInputPage: PDFPage?
   private weak var activeInputOverlay: NativeInkOverlayView?
@@ -548,6 +550,9 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     if let finger = values?["allowFinger"] as? Bool {
       allowFinger = finger
     }
+    if let smoothing = values?["smoothing"] as? NSNumber {
+      activeSmoothing = Double(truncating: smoothing)
+    }
 
     updateInputPolicy()
     for overlay in pageOverlays.values {
@@ -669,15 +674,47 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     )
   }
 
+  /// Same adaptive-alpha shape as Dart's smoothInkPoint (models.dart), which
+  /// blank pages already run raw pointer input through before their own
+  /// curve-fit. Recalibrated for pdfView-local point-space distances instead
+  /// of Dart's 0-1 normalized page-fraction space, so the constant differs
+  /// but the algorithm is the same: fast motion rides close to the raw
+  /// point so strokes don't lag, slow/jittery motion gets smoothed more.
+  private func smoothedPoint(for raw: CGPoint) -> CGPoint {
+    guard let previous = smoothedTouchPoint else {
+      smoothedTouchPoint = raw
+      return raw
+    }
+    let smoothing = min(1.0, max(0.0, activeSmoothing))
+    guard smoothing > 0 else {
+      smoothedTouchPoint = raw
+      return raw
+    }
+    let dx = raw.x - previous.x
+    let dy = raw.y - previous.y
+    let distance = (dx * dx + dy * dy).squareRoot()
+    let baseAlpha = 1.0 - smoothing * 0.82
+    let speedBoost = min(1.0, max(0.0, Double(distance) / 3.0))
+    let alpha = baseAlpha + (1.0 - baseAlpha) * speedBoost
+    let smoothed = CGPoint(
+      x: previous.x + dx * CGFloat(alpha),
+      y: previous.y + dy * CGFloat(alpha)
+    )
+    smoothedTouchPoint = smoothed
+    return smoothed
+  }
+
   private func convertSamples(
     _ samples: [InkInputSample],
     page: PDFPage,
-    overlay: NativeInkOverlayView
+    overlay: NativeInkOverlayView,
+    smoothed: Bool = false
   ) -> [InkPageSample] {
     samples.map { sample in
-      InkPageSample(
-        pagePoint: pdfView.convert(sample.point, to: page),
-        overlayPoint: overlay.convert(sample.point, from: pdfView),
+      let point = smoothed ? smoothedPoint(for: sample.point) : sample.point
+      return InkPageSample(
+        pagePoint: pdfView.convert(point, to: page),
+        overlayPoint: overlay.convert(point, from: pdfView),
         force: sample.force,
         altitude: sample.altitude,
         azimuth: sample.azimuth,
@@ -732,7 +769,7 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
       overlay.configureTool(tool: activeTool, color: activeColor, width: activeWidth)
       refreshOverlayRenderingScale(overlay, force: true)
 
-      let real = convertSamples(recognizer.phaseSamples, page: page, overlay: overlay)
+      let real = convertSamples(recognizer.phaseSamples, page: page, overlay: overlay, smoothed: true)
       appendPageSamples(real)
       overlay.beginStroke(with: real)
       let predicted = convertSamples(recognizer.predictedSamples, page: page, overlay: overlay)
@@ -755,7 +792,7 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
       }
 
       guard let overlay = activeInputOverlay else { return }
-      let real = convertSamples(recognizer.phaseSamples, page: page, overlay: overlay)
+      let real = convertSamples(recognizer.phaseSamples, page: page, overlay: overlay, smoothed: true)
       appendPageSamples(real)
       overlay.appendCommitted(real)
       let predicted = convertSamples(recognizer.predictedSamples, page: page, overlay: overlay)
@@ -780,7 +817,7 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
       }
 
       if let overlay = activeInputOverlay {
-        let real = convertSamples(recognizer.phaseSamples, page: page, overlay: overlay)
+        let real = convertSamples(recognizer.phaseSamples, page: page, overlay: overlay, smoothed: true)
         appendPageSamples(real)
         overlay.appendCommitted(real)
         overlay.setPredicted([])
@@ -830,6 +867,7 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     activeEraserPage = nil
     activeEraserAnnotations.removeAll(keepingCapacity: true)
     activeEraserIds.removeAll(keepingCapacity: true)
+    smoothedTouchPoint = nil
   }
 
   private func makeInkAnnotation(

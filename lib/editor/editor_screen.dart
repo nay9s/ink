@@ -4106,6 +4106,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                       : _width,
                               eraserMode: _eraserMode.name,
                               allowFinger: _settings.allowFinger,
+                              smoothing: _smoothing,
                               onDocumentChanged: _nativeDocumentChanged,
                               onPageChanged: (pdfPage) {
                                 final start = _nativePdfStartIndex ?? 0;

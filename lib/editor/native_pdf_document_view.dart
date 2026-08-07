@@ -81,6 +81,7 @@ class NativePdfDocumentView extends StatefulWidget {
     required this.strokeWidth,
     required this.eraserMode,
     this.allowFinger = false,
+    required this.smoothing,
     this.onPageChanged,
     this.onDocumentChanged,
   });
@@ -95,6 +96,7 @@ class NativePdfDocumentView extends StatefulWidget {
   final double strokeWidth;
   final String eraserMode;
   final bool allowFinger;
+  final double smoothing;
   final ValueChanged<int>? onPageChanged;
   final VoidCallback? onDocumentChanged;
 
@@ -115,6 +117,7 @@ class _NativePdfDocumentViewState extends State<NativePdfDocumentView> {
         'width': widget.strokeWidth,
         'eraserMode': widget.eraserMode,
         'allowFinger': widget.allowFinger,
+        'smoothing': widget.smoothing,
       };
 
   Set<Factory<OneSequenceGestureRecognizer>> get _gestures =>
@@ -141,7 +144,8 @@ class _NativePdfDocumentViewState extends State<NativePdfDocumentView> {
         oldWidget.colorValue != widget.colorValue ||
         oldWidget.strokeWidth != widget.strokeWidth ||
         oldWidget.eraserMode != widget.eraserMode ||
-        oldWidget.allowFinger != widget.allowFinger) {
+        oldWidget.allowFinger != widget.allowFinger ||
+        oldWidget.smoothing != widget.smoothing) {
       unawaited(_sendTool());
     }
   }
@@ -153,6 +157,7 @@ class _NativePdfDocumentViewState extends State<NativePdfDocumentView> {
       'width': widget.strokeWidth,
       'eraserMode': widget.eraserMode,
       'allowFinger': widget.allowFinger,
+      'smoothing': widget.smoothing,
     });
   }
 
