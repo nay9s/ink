@@ -1085,12 +1085,18 @@ extension NativePdfPlatformView: UIGestureRecognizerDelegate {
     _ gestureRecognizer: UIGestureRecognizer,
     shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
   ) -> Bool {
-    // Pencil input can coexist with PDFKit's scroll/zoom recognizers. Because
-    // InkInputGestureRecognizer is stylus-only by default, finger scrolling is
-    // untouched. If Draw with Finger is enabled, the ink recognizer begins on
-    // the first direct touch and owns that drawing gesture.
+    // inkInput always wins exclusively over PDFKit's own pan/pinch/tap
+    // recognizers for any touch it actually receives, mirroring the eager,
+    // exclusive claim the Flutter canvas gives its own ink recognizer over
+    // its InteractiveViewer (see _ConditionalEagerGestureRecognizer in
+    // editor_screen.dart). Without this, both recognizers were allowed to
+    // race for the same touch, and inkInput usually but not always won —
+    // occasionally letting a genuine stylus touch scroll the page instead of
+    // drawing. Finger scrolling is unaffected: with "Draw with finger" off,
+    // inkInput's allowedTouchTypes already excludes direct touches, so it
+    // never becomes a participant for those in the first place.
     if gestureRecognizer === inkInput || otherGestureRecognizer === inkInput {
-      return !allowFinger
+      return false
     }
     return true
   }
