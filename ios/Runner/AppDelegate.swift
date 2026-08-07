@@ -1026,8 +1026,11 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
       guard isInkNoteAnnotation(annotation) else { continue }
       let id = ObjectIdentifier(annotation)
       guard !activeEraserIds.contains(id) else { continue }
-      let expanded = annotation.bounds.insetBy(dx: -radius, dy: -radius)
-      guard expanded.intersects(hitRect) else { continue }
+      // hitRect already covers everything within `radius` of the touch
+      // point; expanding the annotation bounds by radius again here would
+      // double the effective reach, erasing content well outside the
+      // visible eraser-size cursor.
+      guard annotation.bounds.intersects(hitRect) else { continue }
       page.removeAnnotation(annotation)
       activeEraserIds.insert(id)
       activeEraserAnnotations.append(annotation)
