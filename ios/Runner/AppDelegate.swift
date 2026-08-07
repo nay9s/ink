@@ -161,6 +161,7 @@ final class InkInputGestureRecognizer: UIGestureRecognizer {
 /// the stroke is committed as a vector PDF annotation.
 final class NativeInkOverlayView: UIView {
   private let liveStrokeLayer = CAShapeLayer()
+  private let eraserCursorLayer = CAShapeLayer()
   private var committedSamples: [InkPageSample] = []
   private var predictedSamples: [InkPageSample] = []
   private var tool = "pen"
@@ -200,11 +201,26 @@ final class NativeInkOverlayView: UIView {
       "opacity": NSNull(),
     ]
     layer.addSublayer(liveStrokeLayer)
+
+    // Shows where the eraser is and how big it is while erasing, matching
+    // the Flutter canvas's _drawEraserCursor (ink_painter.dart). Hidden
+    // whenever no erase gesture is active.
+    eraserCursorLayer.fillColor = UIColor.white.withAlphaComponent(0.22).cgColor
+    eraserCursorLayer.strokeColor = UIColor.black.withAlphaComponent(0.46).cgColor
+    eraserCursorLayer.lineWidth = 1
+    eraserCursorLayer.isHidden = true
+    eraserCursorLayer.actions = [
+      "path": NSNull(),
+      "opacity": NSNull(),
+      "hidden": NSNull(),
+    ]
+    layer.addSublayer(eraserCursorLayer)
   }
 
   override func layoutSubviews() {
     super.layoutSubviews()
     liveStrokeLayer.frame = bounds
+    eraserCursorLayer.frame = bounds
   }
 
   func configureTool(tool: String, color: UIColor, width: CGFloat) {
@@ -248,6 +264,28 @@ final class NativeInkOverlayView: UIView {
   func setPredicted(_ samples: [InkPageSample]) {
     predictedSamples = samples
     rebuildPath()
+  }
+
+  func showEraserCursor(at overlayPoint: CGPoint, radius: CGFloat) {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    eraserCursorLayer.path = UIBezierPath(
+      arcCenter: overlayPoint,
+      radius: radius,
+      startAngle: 0,
+      endAngle: .pi * 2,
+      clockwise: true
+    ).cgPath
+    eraserCursorLayer.isHidden = false
+    CATransaction.commit()
+  }
+
+  func hideEraserCursor() {
+    guard !eraserCursorLayer.isHidden else { return }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    eraserCursorLayer.isHidden = true
+    CATransaction.commit()
   }
 
   func clearStroke() {
@@ -674,9 +712,17 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
 
       if activeTool == "eraser" {
         activeEraserPage = page
+        let overlay = pageOverlays[ObjectIdentifier(page)]
+        activeInputOverlay = overlay
         for sample in recognizer.phaseSamples {
           let pagePoint = pdfView.convert(sample.point, to: page)
           eraseAnnotations(atPagePoint: pagePoint, page: page)
+        }
+        if let overlay, let last = recognizer.phaseSamples.last {
+          overlay.showEraserCursor(
+            at: overlay.convert(last.point, from: pdfView),
+            radius: eraserRadius()
+          )
         }
         return
       }
@@ -698,6 +744,12 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
         for sample in recognizer.phaseSamples {
           let pagePoint = pdfView.convert(sample.point, to: page)
           eraseAnnotations(atPagePoint: pagePoint, page: page)
+        }
+        if let overlay = activeInputOverlay, let last = recognizer.phaseSamples.last {
+          overlay.showEraserCursor(
+            at: overlay.convert(last.point, from: pdfView),
+            radius: eraserRadius()
+          )
         }
         return
       }
@@ -771,6 +823,7 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
   }
 
   private func resetActiveInput() {
+    activeInputOverlay?.hideEraserCursor()
     activeInputPage = nil
     activeInputOverlay = nil
     activePageSamples.removeAll(keepingCapacity: true)
@@ -804,13 +857,25 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     if localPoints.count == 2 {
       path.addLine(to: localPoints[1])
     } else {
+      // PDF Ink annotations store strokes as point-list polylines, not
+      // bezier curves, so PDFKit has to flatten this path when the
+      // annotation is saved. Sampling the same midpoint-quadratic curve
+      // ourselves at a fine resolution (instead of leaving a handful of
+      // addQuadCurve segments for PDFKit to flatten on its own) keeps the
+      // committed stroke as smooth as the live preview instead of turning
+      // visibly faceted once written to the PDF.
       var previous = localPoints[0]
       for current in localPoints.dropFirst() {
         let midpoint = CGPoint(
           x: (previous.x + current.x) * 0.5,
           y: (previous.y + current.y) * 0.5
         )
-        path.addQuadCurve(to: midpoint, controlPoint: previous)
+        appendFlattenedQuadCurve(
+          to: path,
+          from: path.currentPoint,
+          control: previous,
+          end: midpoint
+        )
         previous = current
       }
       if let last = localPoints.last {
@@ -826,6 +891,33 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     annotation.add(path)
     configure(annotation)
     return annotation
+  }
+
+  /// Samples a quadratic Bezier curve at a fixed resolution and appends it to
+  /// `path` as short straight segments, since PDF Ink annotations can only
+  /// store polylines (see makeInkAnnotation).
+  private func appendFlattenedQuadCurve(
+    to path: UIBezierPath,
+    from start: CGPoint,
+    control: CGPoint,
+    end: CGPoint,
+    segments: Int = 8
+  ) {
+    guard segments > 1 else {
+      path.addLine(to: end)
+      return
+    }
+    for step in 1...segments {
+      let t = CGFloat(step) / CGFloat(segments)
+      let oneMinusT = 1 - t
+      let x = oneMinusT * oneMinusT * start.x
+        + 2 * oneMinusT * t * control.x
+        + t * t * end.x
+      let y = oneMinusT * oneMinusT * start.y
+        + 2 * oneMinusT * t * control.y
+        + t * t * end.y
+      path.addLine(to: CGPoint(x: x, y: y))
+    }
   }
 
   private func makeHighlightAnnotation(
@@ -915,8 +1007,14 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
       annotation.contents?.hasPrefix(Self.annotationPrefix) == true
   }
 
+  /// Shared by the actual hit-test and the on-screen eraser cursor, so the
+  /// two can never drift apart.
+  private func eraserRadius() -> CGFloat {
+    max(4.0, activeWidth * 0.5)
+  }
+
   private func eraseAnnotations(atPagePoint point: CGPoint, page: PDFPage) {
-    let radius = max(4.0, activeWidth * 0.5)
+    let radius = eraserRadius()
     let hitRect = CGRect(
       x: point.x - radius,
       y: point.y - radius,
