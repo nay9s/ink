@@ -120,7 +120,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Draw with finger'),
                       subtitle: const Text(
-                        'Keep this off when using a stylus for better palm rejection.',
+                        'Keep this off for the best palm rejection with Apple '
+                        'Pencil. Turn it on if you draw with a finger, or if '
+                        'your stylus isn\'t detected as Apple Pencil — on PDF '
+                        'pages, panning then needs two fingers while a '
+                        'drawing tool is selected.',
                       ),
                       value: _settings.allowFinger,
                       onChanged: (value) => _updateSettings(
