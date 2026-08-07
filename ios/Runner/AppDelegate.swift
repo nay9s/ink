@@ -24,6 +24,14 @@ import UIKit.UIGestureRecognizerSubclass
         withId: "ink_note/native_pdf_view"
       )
       pdfInkImporter = NativePdfInkImporter(messenger: registrar.messenger())
+      // Temporary — see PdfCrispnessSpikeView. Throwaway comparison view for
+      // deciding whether native PDFKit rendering is worth bringing back as a
+      // display-only background; remove alongside the Dart spike screen once
+      // that question is answered.
+      registrar.register(
+        PdfCrispnessSpikeViewFactory(messenger: registrar.messenger()),
+        withId: "ink_note/pdf_crispness_spike"
+      )
     }
   }
 }
@@ -1465,5 +1473,70 @@ final class NativePdfInkImporter: NSObject {
     let g = Int((green * 255).rounded())
     let b = Int((blue * 255).rounded())
     return (a << 24) | (r << 16) | (g << 8) | b
+  }
+}
+
+// MARK: - Temporary crispness spike (throwaway, see plan)
+
+/// Answers one question: does resizing a native PDFView's actual frame make
+/// PDFKit re-render sharp at that size, instead of stretching an existing
+/// texture the way AdaptivePdfPage's raster image does today? No touch
+/// handling, no ink, no annotations — display only, driven purely by
+/// whatever logical size Flutter's widget layer gives it. Delete this whole
+/// section (and the Dart spike screen) once that question is answered.
+final class PdfCrispnessSpikeViewFactory: NSObject, FlutterPlatformViewFactory {
+  private let messenger: FlutterBinaryMessenger
+
+  init(messenger: FlutterBinaryMessenger) {
+    self.messenger = messenger
+    super.init()
+  }
+
+  func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
+    FlutterStandardMessageCodec.sharedInstance()
+  }
+
+  func create(
+    withFrame frame: CGRect,
+    viewIdentifier viewId: Int64,
+    arguments args: Any?
+  ) -> FlutterPlatformView {
+    PdfCrispnessSpikeView(frame: frame, arguments: args)
+  }
+}
+
+final class PdfCrispnessSpikeView: NSObject, FlutterPlatformView {
+  private let pdfView = PDFView()
+
+  init(frame: CGRect, arguments args: Any?) {
+    super.init()
+
+    pdfView.frame = frame
+    pdfView.backgroundColor = .systemGray6
+    pdfView.isUserInteractionEnabled = false
+    pdfView.autoScales = true
+    pdfView.displayMode = .singlePage
+    pdfView.displaysPageBreaks = false
+    pdfView.displayBox = .cropBox
+
+    let values = args as? [String: Any]
+    guard
+      let path = values?["path"] as? String,
+      let pageNumber = values?["pageNumber"] as? Int,
+      let sourceDocument = PDFDocument(url: URL(fileURLWithPath: path)),
+      let page = sourceDocument.page(at: max(0, pageNumber - 1))
+    else {
+      return
+    }
+
+    // A single-page document, not the original — nothing to scroll to, and
+    // resizing this view can only ever mean "re-fit this one page."
+    let singlePageDocument = PDFDocument()
+    singlePageDocument.insert(page, at: 0)
+    pdfView.document = singlePageDocument
+  }
+
+  func view() -> UIView {
+    pdfView
   }
 }

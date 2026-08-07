@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../editor/pdf_crispness_spike_screen.dart';
 import '../main.dart';
 import '../models.dart';
 import '../store.dart';
@@ -204,6 +205,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: const Text('Permanently remove every note and folder'),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: _clearAllNotes,
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Temporary — throwaway dev entry point for the PDF crispness
+              // spike (see pdf_crispness_spike_screen.dart). Remove this
+              // section together with that screen once the spike's question
+              // is answered.
+              _SettingsSection(
+                title: 'Developer (temporary)',
+                subtitle: 'Throwaway test screens, not for regular use.',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.science_outlined),
+                  title: const Text('PDF crispness spike'),
+                  subtitle: const Text(
+                    'Compare raster vs. native PDF rendering under zoom',
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const PdfCrispnessSpikeScreen(),
+                      ),
+                    );
+                  },
                 ),
               ),
               const SizedBox(height: 26),
