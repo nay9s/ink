@@ -693,13 +693,17 @@ final class NativePdfPlatformView: NSObject, FlutterPlatformView {
     let dx = raw.x - previous.x
     let dy = raw.y - previous.y
     let distance = (dx * dx + dy * dy).squareRoot()
-    let baseAlpha = 1.0 - smoothing * 0.82
-    let speedBoost = min(1.0, max(0.0, Double(distance) / 3.0))
-    let alpha = baseAlpha + (1.0 - baseAlpha) * speedBoost
-    let smoothed = CGPoint(
-      x: previous.x + dx * CGFloat(alpha),
-      y: previous.y + dy * CGFloat(alpha)
-    )
+
+    // Below the deadzone: hold position rather than blend, so sub-pixel
+    // tremor never nudges the line. At/above it: snap almost straight to
+    // the raw point (light single-sample lag only) so tight curves and
+    // loops never visibly cut corners the way a slow alpha-blend does.
+    let deadzone = CGFloat(smoothing) * 1.2
+    if distance < deadzone {
+      return previous
+    }
+    let alpha: CGFloat = 0.9
+    let smoothed = CGPoint(x: previous.x + dx * alpha, y: previous.y + dy * alpha)
     smoothedTouchPoint = smoothed
     return smoothed
   }
