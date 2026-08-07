@@ -24,13 +24,9 @@ import UIKit.UIGestureRecognizerSubclass
         withId: "ink_note/native_pdf_view"
       )
       pdfInkImporter = NativePdfInkImporter(messenger: registrar.messenger())
-      // Temporary — see PdfCrispnessSpikeView. Throwaway comparison view for
-      // deciding whether native PDFKit rendering is worth bringing back as a
-      // display-only background; remove alongside the Dart spike screen once
-      // that question is answered.
       registrar.register(
-        PdfCrispnessSpikeViewFactory(messenger: registrar.messenger()),
-        withId: "ink_note/pdf_crispness_spike"
+        NativePdfPageDisplayViewFactory(messenger: registrar.messenger()),
+        withId: "ink_note/native_pdf_page_display"
       )
     }
   }
@@ -1476,15 +1472,15 @@ final class NativePdfInkImporter: NSObject {
   }
 }
 
-// MARK: - Temporary crispness spike (throwaway, see plan)
+// MARK: - Native display-only PDF page (current page, single-page view mode)
 
-/// Answers one question: does resizing a native PDFView's actual frame make
-/// PDFKit re-render sharp at that size, instead of stretching an existing
-/// texture the way AdaptivePdfPage's raster image does today? No touch
-/// handling, no ink, no annotations — display only, driven purely by
-/// whatever logical size Flutter's widget layer gives it. Delete this whole
-/// section (and the Dart spike screen) once that question is answered.
-final class PdfCrispnessSpikeViewFactory: NSObject, FlutterPlatformViewFactory {
+/// Shows exactly one PDF page, resized to whatever logical size Flutter's
+/// widget layer gives it, so PDFKit lays out and rasterizes fresh at the
+/// true target resolution instead of a stretched texture (validated by the
+/// PdfCrispnessSpike comparison this was promoted from). No touch handling,
+/// no ink, no annotations — display only. Ink stays entirely in the
+/// existing Flutter InkPainter layer drawn on top by editor_screen.dart.
+final class NativePdfPageDisplayViewFactory: NSObject, FlutterPlatformViewFactory {
   private let messenger: FlutterBinaryMessenger
 
   init(messenger: FlutterBinaryMessenger) {
@@ -1501,11 +1497,11 @@ final class PdfCrispnessSpikeViewFactory: NSObject, FlutterPlatformViewFactory {
     viewIdentifier viewId: Int64,
     arguments args: Any?
   ) -> FlutterPlatformView {
-    PdfCrispnessSpikeView(frame: frame, arguments: args)
+    NativePdfPageDisplayView(frame: frame, arguments: args)
   }
 }
 
-final class PdfCrispnessSpikeView: NSObject, FlutterPlatformView {
+final class NativePdfPageDisplayView: NSObject, FlutterPlatformView {
   private let pdfView = PDFView()
 
   init(frame: CGRect, arguments args: Any?) {
