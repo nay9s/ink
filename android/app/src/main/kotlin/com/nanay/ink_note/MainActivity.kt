@@ -1,6 +1,7 @@
 package com.nanay.ink_note
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.RectF
 import android.net.Uri
@@ -8,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.ext.SdkExtensions
+import android.provider.OpenableColumns
 import android.util.SparseArray
 import android.view.Gravity
 import android.view.View
@@ -18,6 +20,7 @@ import androidx.pdf.PdfDocument
 import androidx.pdf.PdfWriteHandle
 import androidx.pdf.ink.EditablePdfViewerFragment
 import androidx.pdf.view.PdfView
+import androidx.lifecycle.lifecycleScope
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -25,15 +28,112 @@ import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : FlutterFragmentActivity() {
+    private var notenFileChannel: MethodChannel? = null
+    private val deliveredNotenPaths = mutableSetOf<String>()
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         flutterEngine.platformViewsController.registry.registerViewFactory(
             "ink_note/native_pdf_view",
             NativePdfViewFactory(this, flutterEngine),
         )
+        notenFileChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            NOTEN_CHANNEL,
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "takePendingPath" -> result.success(takePendingNotenPath())
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        captureNotenIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureNotenIntent(intent)
+    }
+
+    override fun onDestroy() {
+        notenFileChannel?.setMethodCallHandler(null)
+        notenFileChannel = null
+        super.onDestroy()
+    }
+
+    private fun captureNotenIntent(sourceIntent: Intent?): Boolean {
+        if (sourceIntent?.action != Intent.ACTION_VIEW) return false
+        if (sourceIntent.getBooleanExtra(NOTEN_INTENT_CONSUMED, false)) return false
+        val uri = sourceIntent.data ?: return false
+        if (!isNotenUri(uri)) return false
+
+        return try {
+            val directory = notenInboxDirectory().apply { mkdirs() }
+            val destination = File(directory, "${UUID.randomUUID()}.noten")
+            val input = contentResolver.openInputStream(uri) ?: return false
+            input.use { stream ->
+                FileOutputStream(destination).use { output ->
+                    stream.copyTo(output)
+                }
+            }
+            sourceIntent.putExtra(NOTEN_INTENT_CONSUMED, true)
+            notenFileChannel?.invokeMethod("fileAvailable", null)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun isNotenUri(uri: Uri): Boolean {
+        if (contentResolver.getType(uri)?.equals(NOTEN_MIME, ignoreCase = true) == true) {
+            return true
+        }
+        val displayName = try {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        return (displayName ?: uri.lastPathSegment.orEmpty())
+            .endsWith(".noten", ignoreCase = true)
+    }
+
+    private fun notenInboxDirectory(): File = File(cacheDir, "noten_inbox")
+
+    private fun takePendingNotenPath(): String? {
+        val path = notenInboxDirectory()
+            .listFiles { file ->
+                file.isFile &&
+                    file.extension.equals("noten", ignoreCase = true) &&
+                    !deliveredNotenPaths.contains(file.absolutePath)
+            }
+            ?.minByOrNull(File::lastModified)
+            ?.absolutePath
+            ?: return null
+        deliveredNotenPaths.add(path)
+        return path
+    }
+
+    private companion object {
+        const val NOTEN_CHANNEL = "ink_note/noten_files"
+        const val NOTEN_MIME = "application/x-noten"
+        const val NOTEN_INTENT_CONSUMED = "ink_note.noten_intent_consumed"
     }
 }
 
@@ -161,49 +261,62 @@ private class InkPdfViewerFragment : EditablePdfViewerFragment() {
             return
         }
 
-        try {
-            val parent = destination.parentFile
-                ?: throw IllegalStateException("PDF output directory is missing.")
-            parent.mkdirs()
-            val temporary = File(
-                parent,
-                ".${destination.name}.${UUID.randomUUID()}.tmp",
-            )
-            ParcelFileDescriptor.open(
-                temporary,
-                ParcelFileDescriptor.MODE_CREATE or
-                    ParcelFileDescriptor.MODE_TRUNCATE or
-                    ParcelFileDescriptor.MODE_READ_WRITE,
-            ).use { fileDescriptor ->
-                handle.use { writer ->
-                    writer.writeTo(fileDescriptor)
+        lifecycleScope.launch {
+            val outcome = try {
+                withContext(Dispatchers.IO) {
+                    handle.use { writer ->
+                        val parent = destination.parentFile
+                            ?: throw IllegalStateException(
+                                "PDF output directory is missing.",
+                            )
+                        parent.mkdirs()
+                        val temporary = File(
+                            parent,
+                            ".${destination.name}.${UUID.randomUUID()}.tmp",
+                        )
+                        try {
+                            ParcelFileDescriptor.open(
+                                temporary,
+                                ParcelFileDescriptor.MODE_CREATE or
+                                    ParcelFileDescriptor.MODE_TRUNCATE or
+                                    ParcelFileDescriptor.MODE_READ_WRITE,
+                            ).use { fileDescriptor ->
+                                writer.writeTo(fileDescriptor)
+                            }
+
+                            if (destination.exists() && !destination.delete()) {
+                                throw IllegalStateException(
+                                    "Could not replace the original PDF.",
+                                )
+                            }
+                            if (!temporary.renameTo(destination)) {
+                                temporary.copyTo(destination, overwrite = true)
+                                temporary.delete()
+                            }
+                        } catch (error: Throwable) {
+                            temporary.delete()
+                            throw error
+                        }
+                    }
                 }
+                Result.success(Unit)
+            } catch (error: Throwable) {
+                Result.failure(error)
             }
 
-            if (destination.exists() && !destination.delete()) {
-                throw IllegalStateException("Could not replace the original PDF.")
-            }
-            if (!temporary.renameTo(destination)) {
-                temporary.copyTo(destination, overwrite = true)
-                temporary.delete()
-            }
-
-            // The AndroidX PDF API requires the host to exit edit mode after a
-            // successful write. Re-enter immediately so the user can continue.
-            isEditModeEnabled = false
-            view?.post {
+            if (outcome.isSuccess) {
+                // The AndroidX PDF API requires the host to exit edit mode
+                // after a successful write. Re-enter immediately so the user
+                // can continue.
+                isEditModeEnabled = false
+                view?.post {
+                    isEditModeEnabled = true
+                    isToolboxVisible = true
+                }
+            } else {
                 isEditModeEnabled = true
-                isToolboxVisible = true
             }
-            finishSave(Result.success(Unit))
-        } catch (error: Throwable) {
-            try {
-                handle.close()
-            } catch (_: Throwable) {
-                // The original error is more useful to the caller.
-            }
-            isEditModeEnabled = true
-            finishSave(Result.failure(error))
+            finishSave(outcome)
         }
     }
 

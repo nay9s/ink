@@ -3,6 +3,97 @@ import PDFKit
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
+final class NotenFileInbox {
+  static let shared = NotenFileInbox()
+  static let channelName = "ink_note/noten_files"
+
+  private let fileManager = FileManager.default
+  private var channel: FlutterMethodChannel?
+  private var deliveredPaths = Set<String>()
+
+  private var directory: URL {
+    fileManager.temporaryDirectory.appendingPathComponent(
+      "noten_inbox",
+      isDirectory: true
+    )
+  }
+
+  private init() {}
+
+  func attach(messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(
+      name: Self.channelName,
+      binaryMessenger: messenger
+    )
+    self.channel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "takePendingPath":
+        result(self.takePendingPath())
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  @discardableResult
+  func enqueue(_ sourceURL: URL) -> Bool {
+    guard sourceURL.pathExtension.lowercased() == "noten" else { return false }
+    let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+    defer {
+      if hasSecurityScope {
+        sourceURL.stopAccessingSecurityScopedResource()
+      }
+    }
+
+    do {
+      try fileManager.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+      )
+      let destination = directory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension("noten")
+      try fileManager.copyItem(at: sourceURL, to: destination)
+      DispatchQueue.main.async { [weak self] in
+        self?.channel?.invokeMethod("fileAvailable", arguments: nil)
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private func takePendingPath() -> String? {
+    guard
+      let files = try? fileManager.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.creationDateKey],
+        options: [.skipsHiddenFiles]
+      )
+    else {
+      return nil
+    }
+    let pendingFiles = files
+      .filter { file in
+        file.pathExtension.lowercased() == "noten" &&
+          !deliveredPaths.contains(file.path)
+      }
+      .sorted { left, right in
+        let leftDate = try? left.resourceValues(forKeys: [.creationDateKey]).creationDate
+        let rightDate = try? right.resourceValues(forKeys: [.creationDateKey]).creationDate
+        return (leftDate ?? .distantPast) < (rightDate ?? .distantPast)
+      }
+    guard let path = pendingFiles.first?.path else { return nil }
+    deliveredPaths.insert(path)
+    return path
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   // Keeps the one-time ink importer's method channel handler alive; nothing
@@ -14,6 +105,17 @@ import UIKit.UIGestureRecognizerSubclass
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    if NotenFileInbox.shared.enqueue(url) {
+      return true
+    }
+    return super.application(app, open: url, options: options)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -28,6 +130,9 @@ import UIKit.UIGestureRecognizerSubclass
         NativePdfPageDisplayViewFactory(messenger: registrar.messenger()),
         withId: "ink_note/native_pdf_page_display"
       )
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "NotenFileInbox") {
+      NotenFileInbox.shared.attach(messenger: registrar.messenger())
     }
   }
 }

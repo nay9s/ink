@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -7,6 +8,8 @@ import 'package:pdfx/pdfx.dart';
 
 import '../editor/editor_workspace.dart';
 import '../models.dart';
+import '../noten_archive.dart';
+import '../noten_file_inbox.dart';
 import '../screens/settings_screen.dart';
 import '../store.dart';
 import 'notebook_card.dart';
@@ -32,17 +35,68 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _isListView = false;
   LibraryTab _activeTab = LibraryTab.notes;
   bool _restoredWorkspaceOnce = false;
+  bool _notenInboxReady = false;
+  bool _drainingNotenInbox = false;
 
   @override
   void initState() {
     super.initState();
-    _reload();
+    NotenFileInbox.setFileAvailableHandler(_onNotenFileAvailable);
+    unawaited(_initialize());
   }
 
   @override
   void dispose() {
+    NotenFileInbox.setFileAvailableHandler(null);
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _initialize() async {
+    final initialNotenPath = await NotenFileInbox.takePendingPath();
+    if (initialNotenPath != null) {
+      // Opening a Noten file explicitly takes precedence over restoring the
+      // editor that happened to be open on the previous launch.
+      _restoredWorkspaceOnce = true;
+    }
+    await _reload();
+    if (!mounted) return;
+    _notenInboxReady = true;
+    if (initialNotenPath != null) {
+      _drainingNotenInbox = true;
+      try {
+        await _importNotenFile(
+          initialNotenPath,
+          deleteSourceWhenDone: true,
+        );
+      } finally {
+        _drainingNotenInbox = false;
+      }
+    }
+    await _drainNotenInbox();
+  }
+
+  void _onNotenFileAvailable() {
+    if (_notenInboxReady) unawaited(_drainNotenInbox());
+  }
+
+  Future<void> _drainNotenInbox() async {
+    if (!_notenInboxReady ||
+        _drainingNotenInbox ||
+        !mounted ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return;
+    }
+    _drainingNotenInbox = true;
+    try {
+      while (mounted) {
+        final path = await NotenFileInbox.takePendingPath();
+        if (path == null) break;
+        await _importNotenFile(path, deleteSourceWhenDone: true);
+      }
+    } finally {
+      _drainingNotenInbox = false;
+    }
   }
 
   Future<void> _reload() async {
@@ -182,15 +236,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await _openDocument(document);
   }
 
-  Future<void> _importPdfAsNewDocument() async {
+  Future<void> _importDocument() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['pdf'],
+      allowedExtensions: const ['pdf', NotenArchive.extension],
       allowMultiple: false,
     );
     final selectedFile = result?.files.single;
     final sourcePath = selectedFile?.path;
     if (selectedFile == null || sourcePath == null || !mounted) return;
+
+    if (selectedFile.name.toLowerCase().endsWith('.${NotenArchive.extension}')) {
+      await _importNotenFile(sourcePath);
+      return;
+    }
 
     final rawName = selectedFile.name.trim();
     final title = rawName.toLowerCase().endsWith('.pdf')
@@ -283,6 +342,61 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  Future<void> _importNotenFile(
+    String sourcePath, {
+    bool deleteSourceWhenDone = false,
+  }) async {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Importing editable Noten backup...')),
+    );
+
+    NotenImportResult? imported;
+    InkDocument? importedDocument;
+    try {
+      final documentsDirectory = await getApplicationDocumentsDirectory();
+      imported = await NotenArchive.decode(
+        await File(sourcePath).readAsBytes(),
+        documentsDirectory: documentsDirectory,
+        folderId: _activeTab == LibraryTab.notes ? _currentFolderId : null,
+      );
+      importedDocument = imported.document;
+      await InkDocumentStore.save(importedDocument);
+    } catch (error) {
+      if (importedDocument != null) {
+        await InkDocumentStore.delete(importedDocument.id);
+      }
+      final assetDirectory = imported?.assetDirectory;
+      if (assetDirectory != null && await assetDirectory.exists()) {
+        await assetDirectory.delete(recursive: true);
+      }
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Could not import Noten file: $error')),
+        );
+      }
+      importedDocument = null;
+    } finally {
+      if (deleteSourceWhenDone) {
+        final source = File(sourcePath);
+        if (await source.exists()) {
+          try {
+            await source.delete();
+          } on FileSystemException {
+            // The temporary inbox is cleaned up on a later launch.
+          }
+        }
+      }
+    }
+
+    if (importedDocument == null || !mounted) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text('Imported "${importedDocument.title}"')),
+    );
+    await _openDocument(importedDocument);
+  }
+
   Future<void> _openDocument(InkDocument document) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -290,6 +404,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
     );
     await _reload();
+    if (_notenInboxReady) unawaited(_drainNotenInbox());
   }
 
   Future<void> _renameDocument(InkDocument document) async {
@@ -590,7 +705,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           onOpenFolder: (id) =>
                               setState(() => _currentFolderId = id),
                           onNewNote: _newDocument,
-                          onImportPdf: _importPdfAsNewDocument,
+                          onImportFile: _importDocument,
                           onNewFolder: _activeTab == LibraryTab.notes
                               ? _newFolder
                               : null,
@@ -825,7 +940,7 @@ class _LibraryHeader extends StatelessWidget {
     required this.onOpenRoot,
     required this.onOpenFolder,
     required this.onNewNote,
-    required this.onImportPdf,
+    required this.onImportFile,
     required this.onNewFolder,
     required this.compact,
   });
@@ -836,7 +951,7 @@ class _LibraryHeader extends StatelessWidget {
   final VoidCallback onOpenRoot;
   final ValueChanged<String> onOpenFolder;
   final VoidCallback onNewNote;
-  final VoidCallback onImportPdf;
+  final VoidCallback onImportFile;
   final VoidCallback? onNewFolder;
   final bool compact;
 
@@ -887,9 +1002,9 @@ class _LibraryHeader extends StatelessWidget {
               icon: const Icon(Icons.create_new_folder_outlined),
             ),
           IconButton(
-            tooltip: 'Import PDF as new note',
-            onPressed: onImportPdf,
-            icon: const Icon(Icons.picture_as_pdf_outlined),
+            tooltip: 'Import PDF or Noten file',
+            onPressed: onImportFile,
+            icon: const Icon(Icons.file_open_outlined),
           ),
           IconButton.filled(
             tooltip: 'New note',
@@ -912,9 +1027,9 @@ class _LibraryHeader extends StatelessWidget {
           const SizedBox(width: 10),
         ],
         OutlinedButton.icon(
-          onPressed: onImportPdf,
-          icon: const Icon(Icons.picture_as_pdf_outlined),
-          label: const Text('Import PDF'),
+          onPressed: onImportFile,
+          icon: const Icon(Icons.file_open_outlined),
+          label: const Text('Import PDF / Noten'),
         ),
         const SizedBox(width: 10),
         FilledButton.icon(

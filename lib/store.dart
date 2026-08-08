@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_file_paths.dart';
 import 'models.dart';
 
 class InkDocumentStore {
@@ -73,11 +75,14 @@ class InkDocumentStore {
       final raw = preferences.getString('$_documentPrefix$id');
       if (raw == null) continue;
       try {
-        documents.add(
-          InkDocument.fromJson(
-            Map<String, dynamic>.from(jsonDecode(raw) as Map),
-          ),
+        final decoded = InkDocument.fromJson(
+          Map<String, dynamic>.from(jsonDecode(raw) as Map),
         );
+        final resolved = await _resolveFilePaths(decoded);
+        documents.add(resolved.document);
+        if (resolved.changed) {
+          await _write(preferences, resolved.document);
+        }
       } catch (_) {
         // Skip one corrupt document without blocking the rest of the library.
       }
@@ -144,10 +149,11 @@ class InkDocumentStore {
       if (number != null && number > highestExisting) highestExisting = number;
     }
 
-    var number = math.max(
-      preferences.getInt(_documentCounterKey) ?? 0,
-      highestExisting,
-    ).toInt() + 1;
+    var number =
+        math
+            .max(preferences.getInt(_documentCounterKey) ?? 0, highestExisting)
+            .toInt() +
+        1;
     while (used.contains('Document $number')) {
       number++;
     }
@@ -199,12 +205,67 @@ class InkDocumentStore {
   static Future<void> _write(
     SharedPreferences preferences,
     InkDocument document,
-  ) {
-    return preferences.setString(
+  ) async {
+    final json = document.toJson();
+    if (_hasFilePaths(document)) {
+      final documentsDirectory = await getApplicationDocumentsDirectory();
+      json['pageBackgrounds'] = document.pageBackgrounds
+          .map(
+            (path) => path == null
+                ? null
+                : AppFilePaths.forStorage(path, documentsDirectory.path),
+          )
+          .toList();
+      json['pagePdfPaths'] = document.pagePdfPaths
+          .map(
+            (path) => path == null
+                ? null
+                : AppFilePaths.forStorage(path, documentsDirectory.path),
+          )
+          .toList();
+    }
+    await preferences.setString(
       '$_documentPrefix${document.id}',
-      jsonEncode(document.toJson()),
+      jsonEncode(json),
     );
   }
+
+  static bool _hasFilePaths(InkDocument document) =>
+      document.pageBackgrounds.any((path) => path != null && path.isNotEmpty) ||
+      document.pagePdfPaths.any((path) => path != null && path.isNotEmpty);
+
+  static Future<_ResolvedDocumentPaths> _resolveFilePaths(
+    InkDocument document,
+  ) async {
+    if (!_hasFilePaths(document)) {
+      return _ResolvedDocumentPaths(document, false);
+    }
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    var changed = false;
+
+    String? resolve(String? value) {
+      if (value == null || value.isEmpty) return value;
+      final resolved = AppFilePaths.resolve(value, documentsDirectory.path);
+      if (resolved != value &&
+          !value.startsWith(AppFilePaths.referencePrefix)) {
+        changed = true;
+      }
+      return resolved;
+    }
+
+    final resolved = document.copyWith(
+      pageBackgrounds: document.pageBackgrounds.map(resolve).toList(),
+      pagePdfPaths: document.pagePdfPaths.map(resolve).toList(),
+    );
+    return _ResolvedDocumentPaths(resolved, changed);
+  }
+}
+
+class _ResolvedDocumentPaths {
+  const _ResolvedDocumentPaths(this.document, this.changed);
+
+  final InkDocument document;
+  final bool changed;
 }
 
 class InkFolderStore {
@@ -290,8 +351,9 @@ class AppSessionStore {
   static const _editorStatePrefix = 'ink_note_editor_state_v1_';
 
   static Future<WorkspaceSession> loadWorkspace() async {
-    final raw =
-        (await SharedPreferences.getInstance()).getString(_workspaceKey);
+    final raw = (await SharedPreferences.getInstance()).getString(
+      _workspaceKey,
+    );
     if (raw == null) return const WorkspaceSession();
     try {
       return WorkspaceSession.fromJson(
@@ -310,8 +372,9 @@ class AppSessionStore {
   }
 
   static Future<EditorViewState?> loadEditorState(String documentId) async {
-    final raw = (await SharedPreferences.getInstance())
-        .getString('$_editorStatePrefix$documentId');
+    final raw = (await SharedPreferences.getInstance()).getString(
+      '$_editorStatePrefix$documentId',
+    );
     if (raw == null) return null;
     try {
       return EditorViewState.fromJson(
@@ -333,8 +396,9 @@ class AppSessionStore {
   }
 
   static Future<void> deleteEditorState(String documentId) async {
-    await (await SharedPreferences.getInstance())
-        .remove('$_editorStatePrefix$documentId');
+    await (await SharedPreferences.getInstance()).remove(
+      '$_editorStatePrefix$documentId',
+    );
   }
 }
 
@@ -343,8 +407,7 @@ class InkStore {
   static const _colorPresetsKey = 'ink_note_color_presets_v1';
   static const _highlighterColorPresetsKey =
       'ink_note_highlighter_color_presets_v1';
-  static const _highlighterPresetsKey =
-      'ink_note_highlighter_size_presets_v1';
+  static const _highlighterPresetsKey = 'ink_note_highlighter_size_presets_v1';
 
   static Future<List<PenPreset>> loadPresets() async {
     final raw = (await SharedPreferences.getInstance()).getString(_presetsKey);
@@ -368,10 +431,10 @@ class InkStore {
     );
   }
 
-
   static Future<List<PenPreset>> loadHighlighterPresets() async {
-    final raw = (await SharedPreferences.getInstance())
-        .getString(_highlighterPresetsKey);
+    final raw = (await SharedPreferences.getInstance()).getString(
+      _highlighterPresetsKey,
+    );
     if (raw == null) return [];
     try {
       return (jsonDecode(raw) as List)
@@ -385,9 +448,7 @@ class InkStore {
     }
   }
 
-  static Future<void> saveHighlighterPresets(
-    List<PenPreset> presets,
-  ) async {
+  static Future<void> saveHighlighterPresets(List<PenPreset> presets) async {
     await (await SharedPreferences.getInstance()).setString(
       _highlighterPresetsKey,
       jsonEncode(presets.map((preset) => preset.toJson()).toList()),
@@ -395,8 +456,9 @@ class InkStore {
   }
 
   static Future<List<Color>> loadColorPresets() async {
-    final raw =
-        (await SharedPreferences.getInstance()).getString(_colorPresetsKey);
+    final raw = (await SharedPreferences.getInstance()).getString(
+      _colorPresetsKey,
+    );
     if (raw == null) return [];
     try {
       return (jsonDecode(raw) as List)
@@ -415,8 +477,9 @@ class InkStore {
   }
 
   static Future<List<Color>> loadHighlighterColorPresets() async {
-    final raw = (await SharedPreferences.getInstance())
-        .getString(_highlighterColorPresetsKey);
+    final raw = (await SharedPreferences.getInstance()).getString(
+      _highlighterColorPresetsKey,
+    );
     if (raw == null) return [];
     try {
       return (jsonDecode(raw) as List)
@@ -427,9 +490,7 @@ class InkStore {
     }
   }
 
-  static Future<void> saveHighlighterColorPresets(
-    List<Color> colors,
-  ) async {
+  static Future<void> saveHighlighterColorPresets(List<Color> colors) async {
     await (await SharedPreferences.getInstance()).setString(
       _highlighterColorPresetsKey,
       jsonEncode(colors.map((color) => color.toARGB32()).toList()),
