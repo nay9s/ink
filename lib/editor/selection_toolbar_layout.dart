@@ -66,6 +66,10 @@ class SelectionToolbarLayoutDelegate extends SingleChildLayoutDelegate {
   final double bottomMargin;
 
   @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
+      constraints.loosen();
+
+  @override
   Offset getPositionForChild(Size size, Size childSize) {
     return selectionToolbarPosition(
       viewportSize: size,
