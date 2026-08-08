@@ -46,6 +46,7 @@ class FloatingEditorToolbar extends StatelessWidget {
     required this.onTextAlignChanged,
     required this.lineHeight,
     required this.onLineHeightChanged,
+    required this.onAddImage,
   });
 
   final InkTool tool;
@@ -89,6 +90,7 @@ class FloatingEditorToolbar extends StatelessWidget {
   final ValueChanged<TextAlign> onTextAlignChanged;
   final double lineHeight;
   final ValueChanged<double> onLineHeightChanged;
+  final VoidCallback onAddImage;
 
   static const quickWidths = [1.5, 2.0, 3.0];
 
@@ -154,6 +156,12 @@ class FloatingEditorToolbar extends StatelessWidget {
                     label: 'Text',
                     selected: tool == InkTool.text && !zoomMode,
                     onTap: () => onTool(InkTool.text),
+                  ),
+                  _ToolButton(
+                    icon: Icons.image_outlined,
+                    label: 'Add image',
+                    selected: tool == InkTool.image && !zoomMode,
+                    onTap: onAddImage,
                   ),
                   _ToolButton(
                     icon: Icons.gesture_rounded,

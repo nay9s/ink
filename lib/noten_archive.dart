@@ -25,10 +25,12 @@ class NotenImportResult {
   final Directory assetDirectory;
 }
 
+enum _NotenAssetKind { pdf, background, image }
+
 /// Portable, editable Ink Note document.
 ///
 /// A `.noten` file is a validated ZIP container with JSON metadata and every
-/// referenced PDF/background bundled below `assets/`. Archive references are
+/// referenced PDF/background/image bundled below `assets/`. Archive references are
 /// relative, so moving the file between devices never preserves stale iOS
 /// sandbox paths.
 class NotenArchive {
@@ -52,8 +54,12 @@ class NotenArchive {
     final archivedPaths = <String, String>{};
     var pdfIndex = 0;
     var backgroundIndex = 0;
+    var imageIndex = 0;
 
-    Future<String?> bundle(String? localPath, {required bool pdf}) async {
+    Future<String?> bundle(
+      String? localPath, {
+      required _NotenAssetKind kind,
+    }) async {
       if (localPath == null || localPath.isEmpty) return null;
       final existing = archivedPaths[localPath];
       if (existing != null) return existing;
@@ -61,26 +67,41 @@ class NotenArchive {
       final source = File(localPath);
       if (!await source.exists()) {
         throw NotenArchiveException(
-          pdf
-              ? 'The original PDF is missing and cannot be added to this '
-                    'Noten backup.'
-              : 'A page background is missing and cannot be added to this '
-                    'Noten backup.',
+          switch (kind) {
+            _NotenAssetKind.pdf =>
+              'The original PDF is missing and cannot be added to this '
+                  'Noten backup.',
+            _NotenAssetKind.background =>
+              'A page background is missing and cannot be added to this '
+                  'Noten backup.',
+            _NotenAssetKind.image =>
+              'An inserted image is missing and cannot be added to this '
+                  'Noten backup.',
+          },
         );
       }
       final bytes = await source.readAsBytes();
       if (bytes.length > _maxArchiveBytes) {
         throw const NotenArchiveException('A bundled file is too large.');
       }
-      final archivePath = pdf
-          ? 'assets/pdfs/${pdfIndex.toString().padLeft(4, '0')}.pdf'
-          : 'assets/backgrounds/'
-                '${backgroundIndex.toString().padLeft(4, '0')}'
-                '${_safeExtension(localPath)}';
-      if (pdf) {
-        pdfIndex++;
-      } else {
-        backgroundIndex++;
+      final archivePath = switch (kind) {
+        _NotenAssetKind.pdf =>
+          'assets/pdfs/${pdfIndex.toString().padLeft(4, '0')}.pdf',
+        _NotenAssetKind.background =>
+          'assets/backgrounds/'
+              '${backgroundIndex.toString().padLeft(4, '0')}'
+              '${_safeExtension(localPath)}',
+        _NotenAssetKind.image =>
+          'assets/images/${imageIndex.toString().padLeft(4, '0')}'
+              '${_safeExtension(localPath)}',
+      };
+      switch (kind) {
+        case _NotenAssetKind.pdf:
+          pdfIndex++;
+        case _NotenAssetKind.background:
+          backgroundIndex++;
+        case _NotenAssetKind.image:
+          imageIndex++;
       }
       archivedPaths[localPath] = archivePath;
       archive.add(ArchiveFile.noCompress(archivePath, bytes.length, bytes));
@@ -89,14 +110,32 @@ class NotenArchive {
 
     final pdfPaths = <String?>[];
     for (final path in document.pagePdfPaths) {
-      pdfPaths.add(await bundle(path, pdf: true));
+      pdfPaths.add(await bundle(path, kind: _NotenAssetKind.pdf));
     }
     final backgroundPaths = <String?>[];
     for (final path in document.pageBackgrounds) {
-      backgroundPaths.add(await bundle(path, pdf: false));
+      backgroundPaths.add(
+        await bundle(path, kind: _NotenAssetKind.background),
+      );
+    }
+    final pages = <List<Map<String, Object?>>>[];
+    for (final page in document.pages) {
+      final archivedPage = <Map<String, Object?>>[];
+      for (final object in page) {
+        final value = Map<String, Object?>.from(object.toJson());
+        if (object is InkImage) {
+          value['path'] = await bundle(
+            object.path,
+            kind: _NotenAssetKind.image,
+          );
+        }
+        archivedPage.add(value);
+      }
+      pages.add(archivedPage);
     }
     documentJson['pagePdfPaths'] = pdfPaths;
     documentJson['pageBackgrounds'] = backgroundPaths;
+    documentJson['pages'] = pages;
 
     final manifest = <String, Object?>{
       'format': 'noten',
@@ -192,8 +231,12 @@ class NotenArchive {
       final extracted = <String, String>{};
       var pdfIndex = 0;
       var backgroundIndex = 0;
+      var imageIndex = 0;
 
-      Future<String?> extract(Object? rawReference, {required bool pdf}) async {
+      Future<String?> extract(
+        Object? rawReference, {
+        required _NotenAssetKind kind,
+      }) async {
         if (rawReference == null) return null;
         if (rawReference is! String) {
           throw const NotenArchiveException(
@@ -214,14 +257,23 @@ class NotenArchive {
             'A file required by this Noten document is missing.',
           );
         }
-        final outputName = pdf
-            ? 'pdf_${pdfIndex.toString().padLeft(4, '0')}.pdf'
-            : 'background_${backgroundIndex.toString().padLeft(4, '0')}'
-                  '${_safeExtension(reference)}';
-        if (pdf) {
-          pdfIndex++;
-        } else {
-          backgroundIndex++;
+        final outputName = switch (kind) {
+          _NotenAssetKind.pdf =>
+            'pdf_${pdfIndex.toString().padLeft(4, '0')}.pdf',
+          _NotenAssetKind.background =>
+            'background_${backgroundIndex.toString().padLeft(4, '0')}'
+                '${_safeExtension(reference)}',
+          _NotenAssetKind.image =>
+            'image_${imageIndex.toString().padLeft(4, '0')}'
+                '${_safeExtension(reference)}',
+        };
+        switch (kind) {
+          case _NotenAssetKind.pdf:
+            pdfIndex++;
+          case _NotenAssetKind.background:
+            backgroundIndex++;
+          case _NotenAssetKind.image:
+            imageIndex++;
         }
         final output = File(
           '${importDirectory.path}${Platform.pathSeparator}$outputName',
@@ -233,11 +285,38 @@ class NotenArchive {
 
       final pagePdfPaths = <String?>[];
       for (final value in _nullableList(documentJson['pagePdfPaths'])) {
-        pagePdfPaths.add(await extract(value, pdf: true));
+        pagePdfPaths.add(await extract(value, kind: _NotenAssetKind.pdf));
       }
       final pageBackgrounds = <String?>[];
       for (final value in _nullableList(documentJson['pageBackgrounds'])) {
-        pageBackgrounds.add(await extract(value, pdf: false));
+        pageBackgrounds.add(
+          await extract(value, kind: _NotenAssetKind.background),
+        );
+      }
+      final rawPages = documentJson['pages'];
+      if (rawPages is List) {
+        for (var pageIndex = 0; pageIndex < rawPages.length; pageIndex++) {
+          final rawPage = rawPages[pageIndex];
+          if (rawPage is! List) continue;
+          for (var objectIndex = 0;
+              objectIndex < rawPage.length;
+              objectIndex++) {
+            final rawObject = rawPage[objectIndex];
+            if (rawObject is! Map || rawObject['type'] != 'image') continue;
+            final object = Map<String, dynamic>.from(rawObject);
+            final imagePath = await extract(
+              object['path'],
+              kind: _NotenAssetKind.image,
+            );
+            if (imagePath == null) {
+              throw const NotenArchiveException(
+                'Noten contains an invalid image reference.',
+              );
+            }
+            object['path'] = imagePath;
+            rawPage[objectIndex] = object;
+          }
+        }
       }
 
       documentJson

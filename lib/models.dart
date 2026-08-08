@@ -35,6 +35,8 @@ abstract class InkObject {
     switch (type) {
       case 'text':
         return InkText.fromJson(json);
+      case 'image':
+        return InkImage.fromJson(json);
       default:
         return InkStroke.fromJson(json);
     }
@@ -134,6 +136,66 @@ class InkText extends InkObject {
         fontFamily: value['fontFamily'] as String? ?? 'Modern',
         textAlign: TextAlign.values.byName(value['textAlign'] as String? ?? 'left'),
         lineHeight: (value['lineHeight'] as num?)?.toDouble() ?? 1.2,
+      );
+}
+
+class InkImage extends InkObject {
+  InkImage({
+    required this.path,
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    this.isSelected = false,
+  });
+
+  final String path;
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+
+  @override
+  final bool isSelected;
+
+  @override
+  String get type => 'image';
+
+  @override
+  InkImage copyWith({
+    bool? isSelected,
+    String? path,
+    double? x,
+    double? y,
+    double? width,
+    double? height,
+  }) {
+    return InkImage(
+      path: path ?? this.path,
+      x: x ?? this.x,
+      y: y ?? this.y,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      isSelected: isSelected ?? this.isSelected,
+    );
+  }
+
+  @override
+  Map<String, Object> toJson() => {
+        'type': type,
+        'path': path,
+        'x': x,
+        'y': y,
+        'width': width,
+        'height': height,
+      };
+
+  factory InkImage.fromJson(Map<String, dynamic> value) => InkImage(
+        path: value['path'] as String,
+        x: (value['x'] as num).toDouble(),
+        y: (value['y'] as num).toDouble(),
+        width: (value['width'] as num).toDouble(),
+        height: (value['height'] as num).toDouble(),
       );
 }
 

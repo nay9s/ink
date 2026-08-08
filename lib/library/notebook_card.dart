@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../editor/ink_painter.dart';
@@ -90,9 +92,39 @@ class NotebookCard extends StatelessWidget {
                                       ),
                                     )
                                   : IgnorePointer(
-                                      child: CustomPaint(
-                                        painter: InkPainter(strokes: firstPage),
-                                        size: Size.infinite,
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          return Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              for (final image
+                                                  in firstPage
+                                                      .whereType<InkImage>())
+                                                Positioned(
+                                                  left: image.x *
+                                                      constraints.maxWidth,
+                                                  top: image.y *
+                                                      constraints.maxHeight,
+                                                  width: image.width *
+                                                      constraints.maxWidth,
+                                                  height: image.height *
+                                                      constraints.maxHeight,
+                                                  child: Image.file(
+                                                    File(image.path),
+                                                    fit: BoxFit.fill,
+                                                    errorBuilder: (_, _, _) =>
+                                                        const SizedBox(),
+                                                  ),
+                                                ),
+                                              CustomPaint(
+                                                painter: InkPainter(
+                                                  strokes: firstPage,
+                                                ),
+                                                size: Size.infinite,
+                                              ),
+                                            ],
+                                          );
+                                        },
                                       ),
                                     ),
                             ),

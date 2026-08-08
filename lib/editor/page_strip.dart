@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -19,6 +20,7 @@ class PageStrip extends StatelessWidget {
     required this.onAddPage,
     required this.collapsed,
     required this.onToggleCollapsed,
+    required this.images,
   });
 
   final List<List<InkObject>> pages;
@@ -31,6 +33,7 @@ class PageStrip extends StatelessWidget {
   final VoidCallback onAddPage;
   final bool collapsed;
   final VoidCallback onToggleCollapsed;
+  final Map<String, ui.Image> images;
 
   @override
   Widget build(BuildContext context) {
@@ -196,6 +199,7 @@ class PageStrip extends StatelessWidget {
                                         child: CustomPaint(
                                           painter: InkPainter(
                                             strokes: pages[index],
+                                            images: images,
                                           ),
                                           size: Size.infinite,
                                         ),

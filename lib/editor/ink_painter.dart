@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models.dart';
@@ -21,6 +22,7 @@ class InkPainter extends CustomPainter {
     this.eraserCursor,
     this.eraserDiameter = 0,
     this.eraserBorderWidth = 1.5,
+    this.images = const <String, ui.Image>{},
   });
 
   final List<InkObject> strokes;
@@ -36,6 +38,7 @@ class InkPainter extends CustomPainter {
   final InkPoint? eraserCursor;
   final double eraserDiameter;
   final double eraserBorderWidth;
+  final Map<String, ui.Image> images;
 
   double get _scale => contentScale.clamp(.25, 8.0).toDouble();
 
@@ -68,6 +71,8 @@ class InkPainter extends CustomPainter {
         _paintStroke(canvas, rect, object);
       } else if (object is InkText) {
         _paintText(canvas, rect, object);
+      } else if (object is InkImage) {
+        _paintImage(canvas, rect, object);
       }
     }
     if (currentActive is InkStroke &&
@@ -179,24 +184,6 @@ class InkPainter extends CustomPainter {
 
   void _drawSelectionLasso(Canvas canvas, Rect rect) {
     if (selectionPath.length < 3) return;
-    final path = Path()..moveTo(
-      _offsetFor(selectionPath.first, rect).dx,
-      _offsetFor(selectionPath.first, rect).dy,
-    );
-    for (final point in selectionPath.skip(1)) {
-      final offset = _offsetFor(point, rect);
-      path.lineTo(offset.dx, offset.dy);
-    }
-    path.close();
-
-    canvas.drawPath(
-      path,
-      Paint()
-        ..isAntiAlias = true
-        ..style = PaintingStyle.fill
-        ..color = Colors.blueAccent.withValues(alpha: .055),
-    );
-
     final border = Paint()
       ..isAntiAlias = true
       ..color = Colors.blueAccent
@@ -251,6 +238,11 @@ class InkPainter extends CustomPainter {
         maxX = math.max(maxX, object.x + textWidth);
         minY = math.min(minY, object.y);
         maxY = math.max(maxY, object.y + textHeight);
+      } else if (object is InkImage) {
+        minX = math.min(minX, object.x);
+        maxX = math.max(maxX, object.x + object.width);
+        minY = math.min(minY, object.y);
+        maxY = math.max(maxY, object.y + object.height);
       }
     }
 
@@ -544,9 +536,7 @@ class InkPainter extends CustomPainter {
     final paint = Paint()
       ..isAntiAlias = true
       ..style = PaintingStyle.stroke
-      ..color = stroke.isSelected
-          ? Colors.blue.withValues(alpha: 0.5)
-          : stroke.color
+      ..color = stroke.color
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
@@ -716,6 +706,28 @@ class InkPainter extends CustomPainter {
         selectionPaint,
       );
     }
+  }
+
+  void _paintImage(Canvas canvas, Rect rect, InkImage imageObject) {
+    final image = images[imageObject.path];
+    if (image == null ||
+        imageObject.width <= 0 ||
+        imageObject.height <= 0) {
+      return;
+    }
+    final target = Rect.fromLTWH(
+      rect.left + imageObject.x * rect.width,
+      rect.top + imageObject.y * rect.height,
+      imageObject.width * rect.width,
+      imageObject.height * rect.height,
+    );
+    paintImage(
+      canvas: canvas,
+      rect: target,
+      image: image,
+      fit: BoxFit.fill,
+      filterQuality: FilterQuality.high,
+    );
   }
 
   @override

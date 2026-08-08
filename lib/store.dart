@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_file_paths.dart';
 import 'models.dart';
+import 'pdf_note_backing.dart';
 
 class InkDocumentStore {
   static const _indexKey = 'ink_note_document_index_v1';
@@ -108,6 +110,7 @@ class InkDocumentStore {
     String title, {
     String? folderId,
     bool requiresNaming = false,
+    bool createBlankPdf = false,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     final now = DateTime.now();
@@ -120,6 +123,13 @@ class InkDocumentStore {
       0xFF9CC2E5,
       0xFFE59C9C,
     ];
+    File? backingPdf;
+    if (createBlankPdf) {
+      backingPdf = await PdfNoteBacking.createBlank(
+        documentsDirectory: await getApplicationDocumentsDirectory(),
+        documentId: id,
+      );
+    }
     final document = InkDocument(
       id: id,
       title: title.trim().isEmpty ? 'Untitled note' : title.trim(),
@@ -127,14 +137,26 @@ class InkDocumentStore {
       createdAt: now,
       updatedAt: now,
       pages: [[]],
+      pageAspectRatios: createBlankPdf
+          ? const [PdfNoteBacking.defaultAspectRatio]
+          : null,
+      pagePdfPaths: createBlankPdf ? [backingPdf!.path] : null,
+      pagePdfPageNumbers: createBlankPdf ? const [1] : null,
       folderId: folderId,
       requiresNaming: requiresNaming,
     );
-    await _write(preferences, document);
-    final ids = preferences.getStringList(_indexKey) ?? [];
-    await preferences.setStringList(_indexKey, [id, ...ids]);
-    await preferences.setBool(_initializedKey, true);
-    return document;
+    try {
+      await _write(preferences, document);
+      final ids = preferences.getStringList(_indexKey) ?? [];
+      await preferences.setStringList(_indexKey, [id, ...ids]);
+      await preferences.setBool(_initializedKey, true);
+      return document;
+    } catch (_) {
+      if (backingPdf != null && await backingPdf.exists()) {
+        await backingPdf.delete();
+      }
+      rethrow;
+    }
   }
 
   static Future<String> nextAutomaticTitle() async {
@@ -166,6 +188,7 @@ class InkDocumentStore {
       await nextAutomaticTitle(),
       folderId: folderId,
       requiresNaming: true,
+      createBlankPdf: true,
     );
   }
 
@@ -223,6 +246,20 @@ class InkDocumentStore {
                 : AppFilePaths.forStorage(path, documentsDirectory.path),
           )
           .toList();
+      json['pages'] = document.pages
+          .map(
+            (page) => page.map((object) {
+              final value = Map<String, Object>.from(object.toJson());
+              if (object is InkImage) {
+                value['path'] = AppFilePaths.forStorage(
+                  object.path,
+                  documentsDirectory.path,
+                );
+              }
+              return value;
+            }).toList(),
+          )
+          .toList();
     }
     await preferences.setString(
       '$_documentPrefix${document.id}',
@@ -232,7 +269,11 @@ class InkDocumentStore {
 
   static bool _hasFilePaths(InkDocument document) =>
       document.pageBackgrounds.any((path) => path != null && path.isNotEmpty) ||
-      document.pagePdfPaths.any((path) => path != null && path.isNotEmpty);
+      document.pagePdfPaths.any((path) => path != null && path.isNotEmpty) ||
+      document.pages.any(
+        (page) =>
+            page.any((object) => object is InkImage && object.path.isNotEmpty),
+      );
 
   static Future<_ResolvedDocumentPaths> _resolveFilePaths(
     InkDocument document,
@@ -254,6 +295,19 @@ class InkDocumentStore {
     }
 
     final resolved = document.copyWith(
+      pages: document.pages
+          .map(
+            (page) => page
+                .map(
+                  (object) => object is InkImage
+                      ? object.copyWith(
+                          path: resolve(object.path) ?? object.path,
+                        )
+                      : object,
+                )
+                .toList(),
+          )
+          .toList(),
       pageBackgrounds: document.pageBackgrounds.map(resolve).toList(),
       pagePdfPaths: document.pagePdfPaths.map(resolve).toList(),
     );

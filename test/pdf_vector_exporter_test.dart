@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -166,6 +167,43 @@ void main() {
       );
       expect(freeText.contents, 'Vector note');
       expect(freeText.normalAppearance, isNotNull);
+    });
+
+    test('embeds an inserted image as a printable PDF image stamp', () {
+      const imagePath = 'inserted.png';
+      final imageBytes = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
+        'QVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+      );
+      final source = pdf.PdfBlankDocument.create(
+        pageSize: const pdf.PdfPageSize(600, 800),
+      );
+
+      final exported = PdfVectorExporter.export(
+        sourcePdf: source,
+        pages: <List<InkObject>>[
+          <InkObject>[
+            InkImage(
+              path: imagePath,
+              x: .2,
+              y: .25,
+              width: .4,
+              height: .3,
+            ),
+          ],
+        ],
+        imageBytesByPath: <String, Uint8List>{imagePath: imageBytes},
+      );
+      final document = pdf.PdfDocument.open(exported);
+      final stamp = document.page(0).annotations.single;
+
+      expect(stamp.subtype, 'Stamp');
+      expect(stamp.isImageStamp, isTrue);
+      expect(stamp.isPrint, isTrue);
+      expect(stamp.rect.left, closeTo(120, .001));
+      expect(stamp.rect.bottom, closeTo(360, .001));
+      expect(stamp.rect.right, closeTo(360, .001));
+      expect(stamp.rect.top, closeTo(600, .001));
     });
   });
 }

@@ -18,6 +18,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models.dart';
 import '../noten_archive.dart';
+import '../pdf_note_backing.dart';
 import '../store.dart';
 import 'adaptive_pdf_page.dart';
 import 'eraser_geometry.dart';
@@ -31,6 +32,15 @@ import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
 
 enum _ExportChoice { pdfOrImage, noten }
+
+const _lightEditorWorkspaceColor = Color(0xFFF5F5F5);
+const _darkEditorWorkspaceColor = Color(0xFF20232B);
+
+Color _editorWorkspaceColor(BuildContext context) {
+  return Theme.of(context).brightness == Brightness.dark
+      ? _darkEditorWorkspaceColor
+      : _lightEditorWorkspaceColor;
+}
 
 class EditorScreen extends StatefulWidget {
   const EditorScreen({
@@ -58,7 +68,8 @@ class EditorScreen extends StatefulWidget {
   State<EditorScreen> createState() => _EditorScreenState();
 }
 
-class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver {
+class _EditorScreenState extends State<EditorScreen>
+    with WidgetsBindingObserver {
   late List<List<InkObject>> _pages;
   late List<String?> _pageBackgrounds;
   late List<double?> _pageAspectRatios;
@@ -70,7 +81,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   final List<List<List<InkObject>>> _undo = [];
   final List<List<List<InkObject>>> _redo = [];
   final NativePdfController _nativePdfController = NativePdfController();
-  final pdfrx.PdfViewerController _pdfrxController = pdfrx.PdfViewerController();
+  final pdfrx.PdfViewerController _pdfrxController =
+      pdfrx.PdfViewerController();
   int _pdfrxPageStart = 0;
 
   InkStroke? _activeStroke;
@@ -101,19 +113,33 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   ];
 
   List<PenPreset> _presets = List<PenPreset>.of(_defaultPenSizePresets);
-  List<PenPreset> _highlighterPresets =
-      List<PenPreset>.of(_defaultHighlighterSizePresets);
+  List<PenPreset> _highlighterPresets = List<PenPreset>.of(
+    _defaultHighlighterSizePresets,
+  );
   List<Color> _colorPresets = List<Color>.of(_defaultColorPresets);
-  List<Color> _highlighterColorPresets =
-      List<Color>.of(_defaultHighlighterColorPresets);
+  List<Color> _highlighterColorPresets = List<Color>.of(
+    _defaultHighlighterColorPresets,
+  );
 
   static const List<Color> _defaultColorPresets = [
-    Color(0xFF000000), Color(0xFF5F6368), Color(0xFF9AA0A6),
-    Color(0xFFDADCE0), Color(0xFFFFFFFF), Color(0xFF8E24AA),
-    Color(0xFFE53935), Color(0xFFFF5A67), Color(0xFFFF8A8F),
-    Color(0xFFFF9F1C), Color(0xFF1877F2), Color(0xFF0D55A5),
-    Color(0xFF098765), Color(0xFF72C62B), Color(0xFFFFFF73),
-    Color(0xFFB000F5), Color(0xFFF542B3), Color(0xFF49CBE8),
+    Color(0xFF000000),
+    Color(0xFF5F6368),
+    Color(0xFF9AA0A6),
+    Color(0xFFDADCE0),
+    Color(0xFFFFFFFF),
+    Color(0xFF8E24AA),
+    Color(0xFFE53935),
+    Color(0xFFFF5A67),
+    Color(0xFFFF8A8F),
+    Color(0xFFFF9F1C),
+    Color(0xFF1877F2),
+    Color(0xFF0D55A5),
+    Color(0xFF098765),
+    Color(0xFF72C62B),
+    Color(0xFFFFFF73),
+    Color(0xFFB000F5),
+    Color(0xFFF542B3),
+    Color(0xFF49CBE8),
   ];
   static const List<Color> _defaultHighlighterColorPresets = [
     Color(0xFFFFFF73),
@@ -152,6 +178,10 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   bool _selectionMoveMode = false;
   bool _selectionPointerStartedInside = false;
   final List<InkObject> _selectionClipboard = [];
+  final Map<String, ui.Image> _decodedImages = <String, ui.Image>{};
+  final Map<String, Future<void>> _imageLoads = <String, Future<void>>{};
+  bool _imagePickerOpen = false;
+  bool _addingPage = false;
   List<InkObject> get _currentObjects => _pages[_currentPageIndex];
 
   int? get _nativePdfStartIndex {
@@ -221,16 +251,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   /// regardless of _verticalPageMode for a qualifying document.
   bool get _usePdfrxViewer => _qualifiesForLegacyNativeReader;
 
-  bool get _canUndoCurrent => _showNativePdfReader
-      ? _nativePdfController.canUndo
-      : _undo.isNotEmpty;
+  bool get _canUndoCurrent =>
+      _showNativePdfReader ? _nativePdfController.canUndo : _undo.isNotEmpty;
 
-  bool get _canRedoCurrent => _showNativePdfReader
-      ? _nativePdfController.canRedo
-      : _redo.isNotEmpty;
+  bool get _canRedoCurrent =>
+      _showNativePdfReader ? _nativePdfController.canRedo : _redo.isNotEmpty;
 
-  double get _continuousViewScale => _continuousTransformationController
-      .value
+  double get _continuousViewScale => _continuousTransformationController.value
       .getMaxScaleOnAxis()
       .clamp(.1, 4.0)
       .toDouble();
@@ -243,19 +270,19 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     return _verticalPageMode
         ? _continuousViewScale
         : _transformationController.value
-            .getMaxScaleOnAxis()
-            .clamp(.1, 6.0)
-            .toDouble();
+              .getMaxScaleOnAxis()
+              .clamp(.1, 6.0)
+              .toDouble();
   }
 
   EraserGeometry get _eraserGeometry => EraserGeometry(
-        screenDiameter: _eraserSize,
-        canvasToScreenScale: _eraserCanvasToScreenScale,
-        // pdfrx resolves pointer positions against each page's already-
-        // transformed screen rect. The other viewers deliver page-local
-        // coordinates before their InteractiveViewer transform.
-        hitTestInScreenSpace: _usePdfrxViewer,
-      );
+    screenDiameter: _eraserSize,
+    canvasToScreenScale: _eraserCanvasToScreenScale,
+    // pdfrx resolves pointer positions against each page's already-
+    // transformed screen rect. The other viewers deliver page-local
+    // coordinates before their InteractiveViewer transform.
+    hitTestInScreenSpace: _usePdfrxViewer,
+  );
 
   double get _eraserCanvasDiameter => _eraserGeometry.canvasDiameter;
 
@@ -317,6 +344,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     while (_pagePdfPageNumbers.length < _pages.length) {
       _pagePdfPageNumbers.add(null);
     }
+    unawaited(_loadDocumentImages());
     unawaited(_hydrateMissingPageAspectRatios());
 
     unawaited(_restorePersistentEditorState());
@@ -336,8 +364,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     if (start >= _pages.length) return;
     // Only worth the native round-trip if this PDF's pages don't already
     // have ink recorded in the Flutter model.
-    final alreadyHasInk =
-        _pages.sublist(start).any((page) => page.isNotEmpty);
+    final alreadyHasInk = _pages.sublist(start).any((page) => page.isNotEmpty);
     if (alreadyHasInk) return;
 
     final imported = await NativePdfInkImporter.extractStrokes(path);
@@ -372,8 +399,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final savedHighlighterColors = values[4] as List<Color>;
     final viewState = values[5] as EditorViewState?;
     final uniquePenPresets = _uniqueSizePresets(savedPenPresets);
-    final uniqueHighlighterPresets =
-        _uniqueSizePresets(savedHighlighterPresets);
+    final uniqueHighlighterPresets = _uniqueSizePresets(
+      savedHighlighterPresets,
+    );
 
     setState(() {
       _smoothing = viewState?.smoothing ?? settings.defaultSmoothing;
@@ -423,12 +451,14 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (viewState?.pageTransform.length == 16) {
-        _transformationController.value =
-            Matrix4.fromList(viewState!.pageTransform);
+        _transformationController.value = Matrix4.fromList(
+          viewState!.pageTransform,
+        );
       }
       if (viewState?.continuousTransform.length == 16) {
-        _continuousTransformationController.value =
-            Matrix4.fromList(viewState!.continuousTransform);
+        _continuousTransformationController.value = Matrix4.fromList(
+          viewState!.continuousTransform,
+        );
       } else if (_verticalPageMode && _currentPageIndex > 0) {
         _scrollContinuousViewToPage(_currentPageIndex);
       }
@@ -458,33 +488,33 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   }
 
   EditorViewState _captureEditorViewState() => EditorViewState(
-        currentPageIndex: _currentPageIndex,
-        tool: _tool,
-        colorValue: _color.toARGB32(),
-        highlighterColorValue: _highlighterColor.toARGB32(),
-        width: _width,
-        highlighterWidth: _highlighterWidth,
-        smoothing: _smoothing,
-        pressureSensitivity: _pressureSensitivity,
-        eraserSize: _eraserSize,
-        eraserMode: _eraserMode,
-        eraseHighlighterOnly: _eraseHighlighterOnly,
-        eraserAutoDeselect: _eraserAutoDeselect,
-        lastDrawingTool: _lastDrawingTool,
-        lastPenTool: _lastPenTool,
-        zoomMode: _zoomMode,
-        verticalPageMode: _verticalPageMode,
-        pagesPanelCollapsed: _pagesPanelCollapsed,
-        dashedStroke: _dashedStroke,
-        textSize: _textSize,
-        textBold: _textBold,
-        textItalic: _textItalic,
-        textAlign: _textAlign,
-        textLineHeight: _textLineHeight,
-        pageTransform: _transformationController.value.storage.toList(),
-        continuousTransform:
-            _continuousTransformationController.value.storage.toList(),
-      );
+    currentPageIndex: _currentPageIndex,
+    tool: _tool,
+    colorValue: _color.toARGB32(),
+    highlighterColorValue: _highlighterColor.toARGB32(),
+    width: _width,
+    highlighterWidth: _highlighterWidth,
+    smoothing: _smoothing,
+    pressureSensitivity: _pressureSensitivity,
+    eraserSize: _eraserSize,
+    eraserMode: _eraserMode,
+    eraseHighlighterOnly: _eraseHighlighterOnly,
+    eraserAutoDeselect: _eraserAutoDeselect,
+    lastDrawingTool: _lastDrawingTool,
+    lastPenTool: _lastPenTool,
+    zoomMode: _zoomMode,
+    verticalPageMode: _verticalPageMode,
+    pagesPanelCollapsed: _pagesPanelCollapsed,
+    dashedStroke: _dashedStroke,
+    textSize: _textSize,
+    textBold: _textBold,
+    textItalic: _textItalic,
+    textAlign: _textAlign,
+    textLineHeight: _textLineHeight,
+    pageTransform: _transformationController.value.storage.toList(),
+    continuousTransform: _continuousTransformationController.value.storage
+        .toList(),
+  );
 
   Future<void> _saveEditorViewState() async {
     if (!_viewStateLoaded) return;
@@ -528,6 +558,10 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       ..removeListener(_handleContinuousTransformChanged)
       ..dispose();
     _pdfrxController.removeListener(_handlePdfrxTransformChanged);
+    for (final image in _decodedImages.values) {
+      image.dispose();
+    }
+    _decodedImages.clear();
     super.dispose();
   }
 
@@ -537,6 +571,43 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         : null;
     if (saved == null || !saved.isFinite || saved <= .15) return 1.35;
     return saved.clamp(.15, 6.0).toDouble();
+  }
+
+  Future<void> _loadDocumentImages() async {
+    final paths = _pages
+        .expand((page) => page.whereType<InkImage>())
+        .map((image) => image.path)
+        .where((path) => path.isNotEmpty)
+        .toSet();
+    await Future.wait(paths.map(_loadStoredImage));
+  }
+
+  Future<void> _loadStoredImage(String path) {
+    if (_decodedImages.containsKey(path)) return Future<void>.value();
+    return _imageLoads.putIfAbsent(path, () async {
+      ui.Codec? codec;
+      ui.Image? loadedImage;
+      var retained = false;
+      try {
+        final file = File(path);
+        if (!await file.exists()) return;
+        codec = await ui.instantiateImageCodec(await file.readAsBytes());
+        final frame = await codec.getNextFrame();
+        loadedImage = frame.image;
+        if (!mounted) return;
+        setState(() {
+          _decodedImages.remove(path)?.dispose();
+          _decodedImages[path] = loadedImage!;
+        });
+        retained = true;
+        if (_pdfrxController.isReady) _pdfrxController.invalidate();
+      } catch (_) {
+        // Keep the note usable if one inserted image is missing or corrupt.
+      } finally {
+        if (!retained) loadedImage?.dispose();
+        codec?.dispose();
+      }
+    });
   }
 
   Future<void> _hydrateMissingPageAspectRatios() async {
@@ -693,9 +764,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   List<PenPreset> _uniqueSizePresets(Iterable<PenPreset> values) {
     final result = <PenPreset>[];
     for (final value in values) {
-      final exists = result.any(
-        (item) => (item.size - value.size).abs() < .01,
-      );
+      final exists = result.any((item) => (item.size - value.size).abs() < .01);
       if (!exists) result.add(value);
     }
     return result;
@@ -763,14 +832,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(22),
                             side: BorderSide(
-                              color: scheme.outlineVariant.withValues(alpha: .65),
+                              color: scheme.outlineVariant.withValues(
+                                alpha: .65,
+                              ),
                             ),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: SizedBox(
                             width: 360,
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
+                              padding: const EdgeInsets.fromLTRB(
+                                18,
+                                10,
+                                18,
+                                16,
+                              ),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -796,7 +872,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                             deleteRequested = true;
                                             Navigator.of(dialogContext).pop();
                                           },
-                                          icon: const Icon(Icons.delete_outline_rounded),
+                                          icon: const Icon(
+                                            Icons.delete_outline_rounded,
+                                          ),
                                         ),
                                       IconButton(
                                         tooltip: 'Save and close',
@@ -844,9 +922,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                     max: maxValue,
                                     divisions: divisions,
                                     label: displayValue,
-                                    onChanged: (nextValue) => setDialogState(
-                                      () => value = nextValue,
-                                    ),
+                                    onChanged: (nextValue) =>
+                                        setDialogState(() => value = nextValue),
                                   ),
                                   Text(
                                     'Tap outside to save and close automatically.',
@@ -935,9 +1012,11 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
 
     var duplicateIndex = -1;
-    for (var candidateIndex = 0;
-        candidateIndex < presets.length;
-        candidateIndex++) {
+    for (
+      var candidateIndex = 0;
+      candidateIndex < presets.length;
+      candidateIndex++
+    ) {
       if (candidateIndex == index) continue;
       if ((presets[candidateIndex].size - replacement).abs() < .01) {
         duplicateIndex = candidateIndex;
@@ -956,10 +1035,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
 
     final updated = List<PenPreset>.of(presets);
-    updated[index] = PenPreset(
-      size: replacement,
-      smoothing: preset.smoothing,
-    );
+    updated[index] = PenPreset(size: replacement, smoothing: preset.smoothing);
     setState(() {
       if (highlighter) {
         _highlighterPresets = updated;
@@ -1072,12 +1148,10 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       _zoomMode = false;
     });
 
-    var localWidth =
-        _tool == InkTool.highlighter ? _highlighterWidth : _width;
+    var localWidth = _tool == InkTool.highlighter ? _highlighterWidth : _width;
     var localSmoothing = _smoothing;
     var localPressureSensitivity = _pressureSensitivity;
-    var localColor =
-        _tool == InkTool.highlighter ? _highlighterColor : _color;
+    var localColor = _tool == InkTool.highlighter ? _highlighterColor : _color;
 
     await showGeneralDialog<void>(
       context: context,
@@ -1092,10 +1166,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
             final media = MediaQuery.of(context);
             final compact = media.size.width < 650;
             final topOffset = media.padding.top + (compact ? 112.0 : 142.0);
-            final maxPanelHeight = math.max(
-              300.0,
-              media.size.height - topOffset - 18,
-            ).toDouble();
+            final maxPanelHeight = math
+                .max(300.0, media.size.height - topOffset - 18)
+                .toDouble();
             final isHighlighter = _tool == InkTool.highlighter;
             final visibleColors = isHighlighter
                 ? _highlighterColorPresets
@@ -1122,10 +1195,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
               });
               setDialogState(() {
                 final selectingHighlighter = tool == InkTool.highlighter;
-                localWidth =
-                    selectingHighlighter ? _highlighterWidth : _width;
-                localColor =
-                    selectingHighlighter ? _highlighterColor : _color;
+                localWidth = selectingHighlighter ? _highlighterWidth : _width;
+                localColor = selectingHighlighter ? _highlighterColor : _color;
               });
             }
 
@@ -1141,203 +1212,239 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                     ),
                   ),
                   SafeArea(
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      compact ? 10 : 18,
-                      compact ? 82 : 108,
-                      compact ? 10 : 18,
-                      12,
-                    ),
-                    child: Material(
-                      elevation: 22,
-                      shadowColor: Colors.black.withValues(alpha: .28),
-                      color: scheme.surface.withValues(alpha: .985),
-                      surfaceTintColor: scheme.surfaceTint,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        side: BorderSide(
-                          color: scheme.outlineVariant.withValues(alpha: .7),
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          compact ? 10 : 18,
+                          compact ? 82 : 108,
+                          compact ? 10 : 18,
+                          12,
                         ),
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxWidth: 470,
-                          maxHeight: maxPanelHeight,
-                        ),
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
+                        child: Material(
+                          elevation: 22,
+                          shadowColor: Colors.black.withValues(alpha: .28),
+                          color: scheme.surface.withValues(alpha: .985),
+                          surfaceTintColor: scheme.surfaceTint,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            side: BorderSide(
+                              color: scheme.outlineVariant.withValues(
+                                alpha: .7,
+                              ),
+                            ),
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: 470,
+                              maxHeight: maxPanelHeight,
+                            ),
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.fromLTRB(
+                                18,
+                                14,
+                                18,
+                                18,
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Container(
-                                    width: 38,
-                                    height: 38,
-                                    decoration: BoxDecoration(
-                                      color: scheme.primaryContainer,
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Icon(
-                                      penIcon,
-                                      color: scheme.primary,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 11),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        const Text(
-                                          'Pen tools',
-                                          style: TextStyle(
-                                            fontSize: 19,
-                                            fontWeight: FontWeight.w800,
+                                  Row(
+                                    children: [
+                                      Container(
+                                        width: 38,
+                                        height: 38,
+                                        decoration: BoxDecoration(
+                                          color: scheme.primaryContainer,
+                                          borderRadius: BorderRadius.circular(
+                                            12,
                                           ),
                                         ),
-                                        Text(
-                                          penName,
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: scheme.onSurfaceVariant,
+                                        child: Icon(
+                                          penIcon,
+                                          color: scheme.primary,
+                                          size: 20,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 11),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              'Pen tools',
+                                              style: TextStyle(
+                                                fontSize: 19,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                            Text(
+                                              penName,
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: scheme.onSurfaceVariant,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Close',
+                                        onPressed: () =>
+                                            Navigator.of(dialogContext).pop(),
+                                        icon: const Icon(Icons.close_rounded),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: BoxDecoration(
+                                      color: scheme.surfaceContainerHighest
+                                          .withValues(alpha: .55),
+                                      borderRadius: BorderRadius.circular(17),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: _SettingModeChip(
+                                            icon:
+                                                Icons.mode_edit_outline_rounded,
+                                            label: 'Ball',
+                                            selected: _tool == InkTool.pen,
+                                            onTap: () => selectPen(InkTool.pen),
+                                          ),
+                                        ),
+                                        Expanded(
+                                          child: _SettingModeChip(
+                                            icon: Icons.edit_outlined,
+                                            label: 'Fountain',
+                                            selected:
+                                                _tool == InkTool.fountainPen,
+                                            onTap: () =>
+                                                selectPen(InkTool.fountainPen),
+                                          ),
+                                        ),
+                                        Expanded(
+                                          child: _SettingModeChip(
+                                            icon: Icons.brush_outlined,
+                                            label: 'Brush',
+                                            selected: _tool == InkTool.brushPen,
+                                            onTap: () =>
+                                                selectPen(InkTool.brushPen),
+                                          ),
+                                        ),
+                                        Expanded(
+                                          child: _SettingModeChip(
+                                            icon: Icons.border_color_outlined,
+                                            label: 'Highlight',
+                                            selected:
+                                                _tool == InkTool.highlighter,
+                                            onTap: () =>
+                                                selectPen(InkTool.highlighter),
                                           ),
                                         ),
                                       ],
                                     ),
                                   ),
-                                  IconButton(
-                                    tooltip: 'Close',
-                                    onPressed: () =>
-                                        Navigator.of(dialogContext).pop(),
-                                    icon: const Icon(Icons.close_rounded),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Container(
-                                padding: const EdgeInsets.all(4),
-                                decoration: BoxDecoration(
-                                  color: scheme.surfaceContainerHighest
-                                      .withValues(alpha: .55),
-                                  borderRadius: BorderRadius.circular(17),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: _SettingModeChip(
-                                        icon: Icons.mode_edit_outline_rounded,
-                                        label: 'Ball',
-                                        selected: _tool == InkTool.pen,
-                                        onTap: () => selectPen(InkTool.pen),
+                                  const SizedBox(height: 14),
+                                  Container(
+                                    height: 72,
+                                    decoration: BoxDecoration(
+                                      color: scheme.surfaceContainerLowest,
+                                      borderRadius: BorderRadius.circular(18),
+                                      border: Border.all(
+                                        color: scheme.outlineVariant.withValues(
+                                          alpha: .55,
+                                        ),
                                       ),
                                     ),
-                                    Expanded(
-                                      child: _SettingModeChip(
-                                        icon: Icons.edit_outlined,
-                                        label: 'Fountain',
-                                        selected: _tool == InkTool.fountainPen,
-                                        onTap: () =>
-                                            selectPen(InkTool.fountainPen),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: _SettingModeChip(
-                                        icon: Icons.brush_outlined,
-                                        label: 'Brush',
-                                        selected: _tool == InkTool.brushPen,
-                                        onTap: () =>
-                                            selectPen(InkTool.brushPen),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: _SettingModeChip(
-                                        icon: Icons.border_color_outlined,
-                                        label: 'Highlight',
-                                        selected:
-                                            _tool == InkTool.highlighter,
-                                        onTap: () =>
-                                            selectPen(InkTool.highlighter),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              Container(
-                                height: 72,
-                                decoration: BoxDecoration(
-                                  color: scheme.surfaceContainerLowest,
-                                  borderRadius: BorderRadius.circular(18),
-                                  border: Border.all(
-                                    color: scheme.outlineVariant
-                                        .withValues(alpha: .55),
-                                  ),
-                                ),
-                                child: Center(
-                                  child: SizedBox(
-                                    width: 270,
-                                    height: 58,
-                                    child: CustomPaint(
-                                      painter: _PenPreviewPainter(
-                                        color: localColor,
-                                        width: localWidth,
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 270,
+                                        height: 58,
+                                        child: CustomPaint(
+                                          painter: _PenPreviewPainter(
+                                            color: localColor,
+                                            width: localWidth,
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              Row(
-                                children: [
-                                  const Expanded(
-                                    child: Text(
-                                      'Thickness',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w800,
+                                  const SizedBox(height: 14),
+                                  Row(
+                                    children: [
+                                      const Expanded(
+                                        child: Text(
+                                          'Thickness',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
                                       ),
-                                    ),
+                                      Text(
+                                        localWidth.toStringAsFixed(1),
+                                        style: TextStyle(
+                                          color: scheme.primary,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  Text(
-                                    localWidth.toStringAsFixed(1),
-                                    style: TextStyle(
-                                      color: scheme.primary,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: Row(
-                                  children: [
-                                    for (var presetIndex = 0;
-                                        presetIndex < activeSizePresets.length;
-                                        presetIndex++)
-                                      Padding(
-                                        padding:
-                                            const EdgeInsets.only(right: 8),
-                                        child: _PenWidthChoice(
-                                          width: activeSizePresets[presetIndex]
-                                              .size,
-                                          selected: (localWidth -
-                                                      activeSizePresets[
-                                                              presetIndex]
-                                                          .size)
-                                                  .abs() <
-                                              .2,
-                                          onTap: () async {
+                                  const SizedBox(height: 8),
+                                  SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      children: [
+                                        for (
+                                          var presetIndex = 0;
+                                          presetIndex <
+                                              activeSizePresets.length;
+                                          presetIndex++
+                                        )
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                              right: 8,
+                                            ),
+                                            child: _PenWidthChoice(
+                                              width:
+                                                  activeSizePresets[presetIndex]
+                                                      .size,
+                                              selected:
+                                                  (localWidth -
+                                                          activeSizePresets[presetIndex]
+                                                              .size)
+                                                      .abs() <
+                                                  .2,
+                                              onTap: () async {
+                                                final selectedWidth =
+                                                    await _handleSizePresetTap(
+                                                      highlighter:
+                                                          isHighlighter,
+                                                      index: presetIndex,
+                                                    );
+                                                if (!dialogContext.mounted ||
+                                                    selectedWidth == null) {
+                                                  return;
+                                                }
+                                                setDialogState(
+                                                  () => localWidth =
+                                                      selectedWidth,
+                                                );
+                                              },
+                                            ),
+                                          ),
+                                        IconButton.filledTonal(
+                                          tooltip: 'Add size preset',
+                                          onPressed: () async {
                                             final selectedWidth =
-                                                await _handleSizePresetTap(
-                                              highlighter: isHighlighter,
-                                              index: presetIndex,
-                                            );
+                                                await _addSizePreset(
+                                                  highlighter: isHighlighter,
+                                                );
                                             if (!dialogContext.mounted ||
                                                 selectedWidth == null) {
                                               return;
@@ -1346,203 +1453,193 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                               () => localWidth = selectedWidth,
                                             );
                                           },
+                                          icon: const Icon(Icons.add_rounded),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    'Tap a size to use it. Tap the selected size again to edit and save it.',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  _SettingSection(
+                                    title: 'Stroke stabilization',
+                                    trailing: Text(
+                                      '${(localSmoothing * 100).round()}%',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Slider(
+                                          value: localSmoothing,
+                                          min: 0,
+                                          max: 1,
+                                          divisions: 20,
+                                          onChanged: (value) {
+                                            setDialogState(
+                                              () => localSmoothing = value,
+                                            );
+                                            _setPenValues(
+                                              highlighter: isHighlighter,
+                                              smoothing: value,
+                                            );
+                                          },
+                                        ),
+                                        Text(
+                                          'Higher values reduce hand jitter and keep long strokes straighter, with a little more pen lag.',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: scheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (!isHighlighter) ...[
+                                    const SizedBox(height: 10),
+                                    _SettingSection(
+                                      title: 'Pressure sensitivity',
+                                      trailing: Text(
+                                        '${(localPressureSensitivity * 100).round()}%',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
                                         ),
                                       ),
-                                    IconButton.filledTonal(
-                                      tooltip: 'Add size preset',
-                                      onPressed: () async {
-                                        final selectedWidth =
-                                            await _addSizePreset(
-                                          highlighter: isHighlighter,
-                                        );
-                                        if (!dialogContext.mounted ||
-                                            selectedWidth == null) {
-                                          return;
-                                        }
-                                        setDialogState(
-                                          () => localWidth = selectedWidth,
-                                        );
-                                      },
-                                      icon: const Icon(Icons.add_rounded),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 5),
-                              Text(
-                                'Tap a size to use it. Tap the selected size again to edit and save it.',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: scheme.onSurfaceVariant,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              _SettingSection(
-                                title: 'Stroke stabilization',
-                                trailing: Text(
-                                  '${(localSmoothing * 100).round()}%',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Slider(
-                                      value: localSmoothing,
-                                      min: 0,
-                                      max: 1,
-                                      divisions: 20,
-                                      onChanged: (value) {
-                                        setDialogState(
-                                          () => localSmoothing = value,
-                                        );
-                                        _setPenValues(
-                                          highlighter: isHighlighter,
-                                          smoothing: value,
-                                        );
-                                      },
-                                    ),
-                                    Text(
-                                      'Higher values reduce hand jitter and keep long strokes straighter, with a little more pen lag.',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: scheme.onSurfaceVariant,
+                                      child: Slider(
+                                        value: localPressureSensitivity,
+                                        min: 0,
+                                        max: 1,
+                                        divisions: 20,
+                                        onChanged: (value) {
+                                          setDialogState(
+                                            () => localPressureSensitivity =
+                                                value,
+                                          );
+                                          _setPenValues(
+                                            highlighter: false,
+                                            pressureSensitivity: value,
+                                          );
+                                        },
                                       ),
                                     ),
                                   ],
-                                ),
-                              ),
-                              if (!isHighlighter) ...[
-                                const SizedBox(height: 10),
-                                _SettingSection(
-                                  title: 'Pressure sensitivity',
-                                  trailing: Text(
-                                    '${(localPressureSensitivity * 100).round()}%',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
+                                  const SizedBox(height: 14),
+                                  const Text(
+                                    'Color',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
                                     ),
                                   ),
-                                  child: Slider(
-                                    value: localPressureSensitivity,
-                                    min: 0,
-                                    max: 1,
-                                    divisions: 20,
-                                    onChanged: (value) {
-                                      setDialogState(
-                                        () => localPressureSensitivity = value,
-                                      );
-                                      _setPenValues(
-                                        highlighter: false,
-                                        pressureSensitivity: value,
-                                      );
-                                    },
-                                  ),
-                                ),
-                              ],
-                              const SizedBox(height: 14),
-                              const Text(
-                                'Color',
-                                style: TextStyle(fontWeight: FontWeight.w800),
-                              ),
-                              const SizedBox(height: 9),
-                              Wrap(
-                                spacing: 9,
-                                runSpacing: 9,
-                                children: [
-                                  for (var colorIndex = 0;
-                                      colorIndex < visibleColors.length;
-                                      colorIndex++)
-                                    _FloatingColorButton(
-                                      color: visibleColors[colorIndex],
-                                      selected: visibleColors[colorIndex]
-                                              .toARGB32() ==
-                                          localColor.toARGB32(),
-                                      onTap: () async {
-                                        final itemColor =
-                                            visibleColors[colorIndex];
-                                        final alreadySelected =
-                                            itemColor.toARGB32() ==
+                                  const SizedBox(height: 9),
+                                  Wrap(
+                                    spacing: 9,
+                                    runSpacing: 9,
+                                    children: [
+                                      for (
+                                        var colorIndex = 0;
+                                        colorIndex < visibleColors.length;
+                                        colorIndex++
+                                      )
+                                        _FloatingColorButton(
+                                          color: visibleColors[colorIndex],
+                                          selected:
+                                              visibleColors[colorIndex]
+                                                  .toARGB32() ==
+                                              localColor.toARGB32(),
+                                          onTap: () async {
+                                            final itemColor =
+                                                visibleColors[colorIndex];
+                                            final alreadySelected =
+                                                itemColor.toARGB32() ==
                                                 localColor.toARGB32();
-                                        if (!alreadySelected) {
-                                          setState(() {
-                                            if (isHighlighter) {
-                                              _highlighterColor = itemColor;
-                                            } else {
-                                              _color = itemColor;
+                                            if (!alreadySelected) {
+                                              setState(() {
+                                                if (isHighlighter) {
+                                                  _highlighterColor = itemColor;
+                                                } else {
+                                                  _color = itemColor;
+                                                }
+                                              });
+                                              setDialogState(
+                                                () => localColor = itemColor,
+                                              );
+                                              return;
                                             }
-                                          });
-                                          setDialogState(
-                                            () => localColor = itemColor,
-                                          );
-                                          return;
-                                        }
 
-                                        final replacement =
-                                            await _replaceQuickColorSlot(
-                                          highlighter: isHighlighter,
-                                          index: colorIndex,
-                                          initialColor: itemColor,
-                                        );
-                                        if (!dialogContext.mounted ||
-                                            replacement == null) {
-                                          return;
-                                        }
-                                        setDialogState(
-                                          () => localColor = replacement,
-                                        );
+                                            final replacement =
+                                                await _replaceQuickColorSlot(
+                                                  highlighter: isHighlighter,
+                                                  index: colorIndex,
+                                                  initialColor: itemColor,
+                                                );
+                                            if (!dialogContext.mounted ||
+                                                replacement == null) {
+                                              return;
+                                            }
+                                            setDialogState(
+                                              () => localColor = replacement,
+                                            );
+                                          },
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 7),
+                                  Text(
+                                    'Tap the selected color again to replace it',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  if (!isHighlighter) ...[
+                                    const SizedBox(height: 12),
+                                    SwitchListTile.adaptive(
+                                      contentPadding: EdgeInsets.zero,
+                                      dense: true,
+                                      title: const Text(
+                                        'Dashed stroke',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      value: _dashedStroke,
+                                      onChanged: (value) {
+                                        setState(() => _dashedStroke = value);
+                                        setDialogState(() {});
                                       },
                                     ),
-                                ],
-                              ),
-                              const SizedBox(height: 7),
-                              Text(
-                                'Tap the selected color again to replace it',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: scheme.onSurfaceVariant,
-                                ),
-                              ),
-                              if (!isHighlighter) ...[
-                                const SizedBox(height: 12),
-                                SwitchListTile.adaptive(
-                                  contentPadding: EdgeInsets.zero,
-                                  dense: true,
-                                  title: const Text(
-                                    'Dashed stroke',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  value: _dashedStroke,
-                                  onChanged: (value) {
-                                    setState(() => _dashedStroke = value);
-                                    setDialogState(() {});
-                                  },
-                                ),
-                              ],
-                              const SizedBox(height: 4),
-                              Row(
-                                children: [
-                                  const Spacer(),
-                                  FilledButton(
-                                    onPressed: () =>
-                                        Navigator.of(dialogContext).pop(),
-                                    child: const Text('Done'),
+                                  ],
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    children: [
+                                      const Spacer(),
+                                      FilledButton(
+                                        onPressed: () =>
+                                            Navigator.of(dialogContext).pop(),
+                                        child: const Text('Done'),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
+                ],
               ),
-              ],
-            ),
-          );
+            );
           },
         );
       },
@@ -1571,10 +1668,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
 
     final settings = await AppSettingsStore.load();
     await AppSettingsStore.save(
-      settings.copyWith(
-        defaultSmoothing: _smoothing,
-        defaultWidth: _width,
-      ),
+      settings.copyWith(defaultSmoothing: _smoothing, defaultWidth: _width),
     );
   }
 
@@ -1619,20 +1713,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       gestures: <Type, GestureRecognizerFactory>{
         _ConditionalEagerGestureRecognizer:
             GestureRecognizerFactoryWithHandlers<
-                _ConditionalEagerGestureRecognizer>(
-          () => _ConditionalEagerGestureRecognizer(
-            shouldAccept: _shouldCaptureCanvasPointer,
-            supportedDevices: const <PointerDeviceKind>{
-              PointerDeviceKind.touch,
-              PointerDeviceKind.stylus,
-              PointerDeviceKind.invertedStylus,
-              PointerDeviceKind.mouse,
-            },
-          ),
-          (recognizer) {
-            recognizer.shouldAccept = _shouldCaptureCanvasPointer;
-          },
-        ),
+              _ConditionalEagerGestureRecognizer
+            >(
+              () => _ConditionalEagerGestureRecognizer(
+                shouldAccept: _shouldCaptureCanvasPointer,
+                supportedDevices: const <PointerDeviceKind>{
+                  PointerDeviceKind.touch,
+                  PointerDeviceKind.stylus,
+                  PointerDeviceKind.invertedStylus,
+                  PointerDeviceKind.mouse,
+                },
+              ),
+              (recognizer) {
+                recognizer.shouldAccept = _shouldCaptureCanvasPointer;
+              },
+            ),
       },
       child: child,
     );
@@ -1663,16 +1758,16 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
 
   Size _stabilizerScreenSize(Size canvasSize) {
     if (_usePdfrxViewer) return canvasSize;
-    final scale = (_verticalPageMode
-            ? _continuousViewScale
-            : _transformationController.value.getMaxScaleOnAxis())
-        .clamp(.1, 6.0)
-        .toDouble();
+    final scale =
+        (_verticalPageMode
+                ? _continuousViewScale
+                : _transformationController.value.getMaxScaleOnAxis())
+            .clamp(.1, 6.0)
+            .toDouble();
     return Size(canvasSize.width * scale, canvasSize.height * scale);
   }
 
-  bool _usesStrokeStabilizer(InkStroke stroke) =>
-      stroke.tool != InkTool.shape;
+  bool _usesStrokeStabilizer(InkStroke stroke) => stroke.tool != InkTool.shape;
 
   void _appendPointTowards(InkPoint target, Size size) {
     final stroke = _activeStroke;
@@ -1681,16 +1776,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final start = stroke.points.last;
     final dxPixels = (target.x - start.x) * size.width;
     final dyPixels = (target.y - start.y) * size.height;
-    final distancePixels = math.sqrt(
-      dxPixels * dxPixels + dyPixels * dyPixels,
-    );
+    final distancePixels = math.sqrt(dxPixels * dxPixels + dyPixels * dyPixels);
     if (distancePixels < .15) return;
 
     // Keep the stabilized samples as the dominant control points. Only bridge
     // genuinely large gaps; the painter creates the smooth curve.
     final sampleSpacing = 3.2 + (1 - _smoothing) * 1.8;
-    final steps =
-        (distancePixels / sampleSpacing).ceil().clamp(1, 8).toInt();
+    final steps = (distancePixels / sampleSpacing).ceil().clamp(1, 8).toInt();
     for (var step = 1; step <= steps; step++) {
       final amount = step / steps;
       stroke.points.add(
@@ -1771,10 +1863,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final currentScale = controller.value.getMaxScaleOnAxis();
     final nextScale = (currentScale * factor).clamp(.1, 6.0).toDouble();
     if ((nextScale - currentScale).abs() < .001) return;
-    final focalPoint = Offset(
-      _pageViewportWidth / 2,
-      _pageViewportHeight / 2,
-    );
+    final focalPoint = Offset(_pageViewportWidth / 2, _pageViewportHeight / 2);
     final scenePoint = controller.toScene(focalPoint);
     _applyZoomAroundPoint(
       controller: controller,
@@ -1854,13 +1943,12 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final translation = matrix.getTranslation();
     final scaledContentWidth = contentWidth * scale;
 
-    final targetX = scaledContentWidth <=
-            viewportWidth + _horizontalPanThreshold
+    final targetX =
+        scaledContentWidth <= viewportWidth + _horizontalPanThreshold
         ? (viewportWidth - scaledContentWidth) / 2
-        : translation.x.clamp(
-            viewportWidth - scaledContentWidth,
-            0.0,
-          ).toDouble();
+        : translation.x
+              .clamp(viewportWidth - scaledContentWidth, 0.0)
+              .toDouble();
 
     if ((targetX - translation.x).abs() < .05) return false;
     controller.value = Matrix4.identity()
@@ -1945,12 +2033,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         : _transformationController;
     _clampHorizontalTransform(
       controller: controller,
-      viewportWidth: continuous
-          ? _continuousViewportWidth
-          : _pageViewportWidth,
-      contentWidth: continuous
-          ? _continuousPaperWidth
-          : _pageViewportWidth,
+      viewportWidth: continuous ? _continuousViewportWidth : _pageViewportWidth,
+      contentWidth: continuous ? _continuousPaperWidth : _pageViewportWidth,
     );
     if (continuous) {
       _continuousGestureScenePoint = null;
@@ -2005,7 +2089,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   void _pointerDown(PointerDownEvent event, Size size) {
     final point = _point(event, size);
     final hasLassoSelection = _tool == InkTool.lasso && _hasSelection;
-    final startedInsideSelection = hasLassoSelection &&
+    final startedInsideSelection =
+        hasLassoSelection &&
         _selectionContainsLocalOffset(event.localPosition, size);
     _selectionPointerStartedInside = startedInsideSelection;
 
@@ -2040,9 +2125,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
     if (!_accept(event)) return;
 
-    final movingTextSelection = _tool == InkTool.text &&
-        _selectionMoveMode &&
-        _hasSelection;
+    final movingTextSelection =
+        _tool == InkTool.text && _selectionMoveMode && _hasSelection;
     if (_tool == InkTool.text && !movingTextSelection) {
       unawaited(_handleTextTap(point, size));
       return;
@@ -2063,9 +2147,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
             _selectionPointerStartedInside) {
           _selectionMoveMode = true;
           _lassoPath.clear();
-        } else if (_selectionMoveMode &&
-            _hasSelection &&
-            movingTextSelection) {
+        } else if (_selectionMoveMode && _hasSelection && movingTextSelection) {
           _lassoPath.clear();
         } else if (_tool == InkTool.lasso) {
           _selectionMoveMode = false;
@@ -2082,20 +2164,16 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         final activeTool = _tool == InkTool.highlighter
             ? InkTool.highlighter
             : _tool == InkTool.shape
-                ? InkTool.shape
-                : _tool == InkTool.fountainPen
-                    ? InkTool.fountainPen
-                    : _tool == InkTool.brushPen
-                        ? InkTool.brushPen
-                        : InkTool.pen;
+            ? InkTool.shape
+            : _tool == InkTool.fountainPen
+            ? InkTool.fountainPen
+            : _tool == InkTool.brushPen
+            ? InkTool.brushPen
+            : InkTool.pen;
         _activeStroke = InkStroke(
           tool: activeTool,
-          color: activeTool == InkTool.highlighter
-              ? _highlighterColor
-              : _color,
-          width: activeTool == InkTool.highlighter
-              ? _highlighterWidth
-              : _width,
+          color: activeTool == InkTool.highlighter ? _highlighterColor : _color,
+          width: activeTool == InkTool.highlighter ? _highlighterWidth : _width,
           points: [point],
           dashed: activeTool == InkTool.highlighter ? false : _dashedStroke,
           pressureSensitivity: _pressureSensitivity,
@@ -2114,8 +2192,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   void _clearSelection() {
     for (var index = 0; index < _currentObjects.length; index++) {
       if (_currentObjects[index].isSelected) {
-        _currentObjects[index] =
-            _currentObjects[index].copyWith(isSelected: false);
+        _currentObjects[index] = _currentObjects[index].copyWith(
+          isSelected: false,
+        );
       }
     }
     _selectionLassoPath.clear();
@@ -2146,6 +2225,12 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
           y: (object.y + dy).clamp(0, 1),
           isSelected: true,
         );
+      } else if (object is InkImage) {
+        _currentObjects[index] = object.copyWith(
+          x: (object.x + dx).clamp(0, math.max(0.0, 1 - object.width)),
+          y: (object.y + dy).clamp(0, math.max(0.0, 1 - object.height)),
+          isSelected: true,
+        );
       }
     }
     if (_selectionLassoPath.isNotEmpty) {
@@ -2165,15 +2250,17 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
       final a = polygon[i];
       final b = polygon[j];
-      final intersects = ((a.y > point.y) != (b.y > point.y)) &&
+      final intersects =
+          ((a.y > point.y) != (b.y > point.y)) &&
           (point.x <
-              (b.x - a.x) * (point.y - a.y) / ((b.y - a.y).abs() < 1e-9 ? 1e-9 : b.y - a.y) +
+              (b.x - a.x) *
+                      (point.y - a.y) /
+                      ((b.y - a.y).abs() < 1e-9 ? 1e-9 : b.y - a.y) +
                   a.x);
       if (intersects) inside = !inside;
     }
     return inside;
   }
-
 
   Rect? _selectionBounds(Size canvasSize) {
     Rect? bounds;
@@ -2199,9 +2286,18 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         ).inflate(padding);
       } else if (object is InkText) {
         objectBounds = _textBounds(object, canvasSize).inflate(16);
+      } else if (object is InkImage) {
+        objectBounds = Rect.fromLTWH(
+          object.x * canvasSize.width,
+          object.y * canvasSize.height,
+          object.width * canvasSize.width,
+          object.height * canvasSize.height,
+        ).inflate(12);
       }
       if (objectBounds == null) continue;
-      bounds = bounds == null ? objectBounds : bounds.expandToInclude(objectBounds);
+      bounds = bounds == null
+          ? objectBounds
+          : bounds.expandToInclude(objectBounds);
     }
     return bounds;
   }
@@ -2228,12 +2324,18 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       final object = _currentObjects[index];
       bool selected;
       if (object is InkStroke) {
-        selected = object.points.any((point) => _pointInPolygon(point, _lassoPath));
-      } else if (object is InkText) {
-        selected = _pointInPolygon(
-          InkPoint(object.x, object.y, 1),
-          _lassoPath,
+        selected = object.points.any(
+          (point) => _pointInPolygon(point, _lassoPath),
         );
+      } else if (object is InkText) {
+        selected = _pointInPolygon(InkPoint(object.x, object.y, 1), _lassoPath);
+      } else if (object is InkImage) {
+        final center = InkPoint(
+          object.x + object.width / 2,
+          object.y + object.height / 2,
+          1,
+        );
+        selected = _pointInPolygon(center, _lassoPath);
       } else {
         selected = false;
       }
@@ -2267,6 +2369,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         isSelected: selected,
       );
     }
+    if (object is InkImage) {
+      return object.copyWith(
+        x: (object.x + offset).clamp(0, math.max(0.0, 1 - object.width)),
+        y: (object.y + offset).clamp(0, math.max(0.0, 1 - object.height)),
+        isSelected: selected,
+      );
+    }
     return object.copyWith(isSelected: selected);
   }
 
@@ -2278,17 +2387,12 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         ..addAll(
           _currentObjects
               .where((item) => item.isSelected)
-              .map(
-                (item) => _cloneSelectionObject(
-                  item,
-                  selected: false,
-                ),
-              ),
+              .map((item) => _cloneSelectionObject(item, selected: false)),
         );
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Selection copied.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Selection copied.')));
   }
 
   void _cutSelection() {
@@ -2300,12 +2404,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         ..addAll(
           _currentObjects
               .where((item) => item.isSelected)
-              .map(
-                (item) => _cloneSelectionObject(
-                  item,
-                  selected: false,
-                ),
-              ),
+              .map((item) => _cloneSelectionObject(item, selected: false)),
         );
       _currentObjects.removeWhere((item) => item.isSelected);
       _selectionMoveMode = false;
@@ -2322,11 +2421,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       _clearSelection();
       _currentObjects.addAll(
         _selectionClipboard.map(
-          (item) => _cloneSelectionObject(
-            item,
-            selected: true,
-            offset: .025,
-          ),
+          (item) => _cloneSelectionObject(item, selected: true, offset: .025),
         ),
       );
       _selectionMoveMode = true;
@@ -2354,9 +2449,15 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         final object = _currentObjects[index];
         if (!object.isSelected) continue;
         if (object is InkStroke) {
-          _currentObjects[index] = object.copyWith(color: color, isSelected: true);
+          _currentObjects[index] = object.copyWith(
+            color: color,
+            isSelected: true,
+          );
         } else if (object is InkText) {
-          _currentObjects[index] = object.copyWith(color: color, isSelected: true);
+          _currentObjects[index] = object.copyWith(
+            color: color,
+            isSelected: true,
+          );
         }
       }
     });
@@ -2370,10 +2471,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         style: TextStyle(
           color: textObject.color,
           fontSize: textObject.fontSize,
-          fontWeight:
-              textObject.bold ? FontWeight.bold : FontWeight.normal,
-          fontStyle:
-              textObject.italic ? FontStyle.italic : FontStyle.normal,
+          fontWeight: textObject.bold ? FontWeight.bold : FontWeight.normal,
+          fontStyle: textObject.italic ? FontStyle.italic : FontStyle.normal,
           height: textObject.lineHeight,
         ),
       ),
@@ -2448,9 +2547,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                       behavior: HitTestBehavior.opaque,
                       onTap: () {
                         final result = buildResult();
-                        Navigator.of(dialogContext).pop(
-                          result.text.isEmpty && isNew ? null : result,
-                        );
+                        Navigator.of(
+                          dialogContext,
+                        ).pop(result.text.isEmpty && isNew ? null : result);
                       },
                       child: const SizedBox.expand(),
                     ),
@@ -2471,16 +2570,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(22),
                             side: BorderSide(
-                              color: scheme.outlineVariant
-                                  .withValues(alpha: .65),
+                              color: scheme.outlineVariant.withValues(
+                                alpha: .65,
+                              ),
                             ),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 470),
                             child: Padding(
-                              padding:
-                                  const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                              padding: const EdgeInsets.fromLTRB(
+                                16,
+                                10,
+                                16,
+                                16,
+                              ),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -2488,7 +2592,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                     children: [
                                       Expanded(
                                         child: Text(
-                                          isNew ? 'New text box' : 'Edit text box',
+                                          isNew
+                                              ? 'New text box'
+                                              : 'Edit text box',
                                           style: const TextStyle(
                                             fontSize: 19,
                                             fontWeight: FontWeight.w800,
@@ -2773,8 +2879,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         }
       }
       if (_activeStroke != null) _currentObjects.add(_activeStroke!);
-      final autoReturnToPen =
-          _eraserAutoDeselect && _tool == InkTool.eraser;
+      final autoReturnToPen = _eraserAutoDeselect && _tool == InkTool.eraser;
       _activeStroke = null;
       _activePointer = null;
       _activePointerKind = null;
@@ -2802,7 +2907,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     var changed = false;
     for (var step = 1; step <= steps; step++) {
       final amount = step / steps;
-      changed = _eraseAt(
+      changed =
+          _eraseAt(
             InkPoint(
               start.x + (end.x - start.x) * amount,
               start.y + (end.y - start.y) * amount,
@@ -2819,8 +2925,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final delta = end - start;
     final lengthSquared = delta.distanceSquared;
     if (lengthSquared <= .00001) return (point - start).distance;
-    final projection = ((point - start).dx * delta.dx +
-            (point - start).dy * delta.dy) /
+    final projection =
+        ((point - start).dx * delta.dx + (point - start).dy * delta.dy) /
         lengthSquared;
     final amount = projection.clamp(0.0, 1.0).toDouble();
     return (point - (start + delta * amount)).distance;
@@ -2836,10 +2942,10 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     if (stroke.points.isEmpty) return false;
     final hitRadius = radius + stroke.width * strokeScale / 2;
     final offsets = stroke.points
-        .map((candidate) => Offset(
-              candidate.x * size.width,
-              candidate.y * size.height,
-            ))
+        .map(
+          (candidate) =>
+              Offset(candidate.x * size.width, candidate.y * size.height),
+        )
         .toList();
     if (offsets.length == 1) {
       return (offsets.first - center).distance <= hitRadius;
@@ -2853,10 +2959,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     return false;
   }
 
-  List<InkPoint> _densifyStrokeForErasing(
-    InkStroke stroke,
-    Size size,
-  ) {
+  List<InkPoint> _densifyStrokeForErasing(InkStroke stroke, Size size) {
     if (stroke.points.length < 2) return List<InkPoint>.of(stroke.points);
     final result = <InkPoint>[];
     for (var index = 0; index < stroke.points.length - 1; index++) {
@@ -2924,10 +3027,10 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       final workingPoints = _densifyStrokeForErasing(object, size);
       final hitPoints = List<bool>.filled(workingPoints.length, false);
       final offsets = workingPoints
-          .map((candidate) => Offset(
-                candidate.x * size.width,
-                candidate.y * size.height,
-              ))
+          .map(
+            (candidate) =>
+                Offset(candidate.x * size.width, candidate.y * size.height),
+          )
           .toList();
       for (var index = 0; index < offsets.length; index++) {
         if ((offsets[index] - center).distance <= hitRadius) {
@@ -2974,8 +3077,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     setState(() {
       _redo.add(_copyPages());
       _pages = _undo.removeLast();
-      _currentPageIndex =
-          math.min(_currentPageIndex, _pages.length - 1);
+      _currentPageIndex = math.min(_currentPageIndex, _pages.length - 1);
       _activeStroke = null;
     });
     _scheduleSave();
@@ -2986,8 +3088,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     setState(() {
       _undo.add(_copyPages());
       _pages = _redo.removeLast();
-      _currentPageIndex =
-          math.min(_currentPageIndex, _pages.length - 1);
+      _currentPageIndex = math.min(_currentPageIndex, _pages.length - 1);
       _activeStroke = null;
     });
     _scheduleSave();
@@ -3039,8 +3140,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     var offset = 0.0;
     final last = math.min(index, _pages.length);
     for (var page = 0; page < last; page++) {
-      offset += _continuousPaperWidth * _pageAspectRatio(page) +
-          _continuousGap;
+      offset += _continuousPaperWidth * _pageAspectRatio(page) + _continuousGap;
     }
     return offset;
   }
@@ -3059,7 +3159,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     if (_pages.isEmpty || _continuousPaperWidth <= 0) return 0;
     var cursor = 0.0;
     for (var page = 0; page < _pages.length; page++) {
-      final extent = _continuousPaperWidth * _pageAspectRatio(page) +
+      final extent =
+          _continuousPaperWidth * _pageAspectRatio(page) +
           (page < _pages.length - 1 ? _continuousGap : 0);
       if (offset < cursor + extent) return page;
       cursor += extent;
@@ -3078,9 +3179,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       0.0,
       _continuousDocumentHeight - _continuousViewportHeight / scale,
     );
-    final target = _continuousOffsetForPage(index)
-        .clamp(0.0, maxOffset)
-        .toDouble();
+    final target = _continuousOffsetForPage(
+      index,
+    ).clamp(0.0, maxOffset).toDouble();
     _continuousTransformationController.value = Matrix4.identity()
       ..translateByDouble(0, -target * scale, 0, 1)
       ..scaleByDouble(scale, scale, scale, 1.0);
@@ -3089,13 +3190,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   void _schedulePdfQualityRefresh() {
     final rawScale = _verticalPageMode
         ? _continuousTransformationController.value
-            .getMaxScaleOnAxis()
-            .clamp(.1, 4.0)
-            .toDouble()
+              .getMaxScaleOnAxis()
+              .clamp(.1, 4.0)
+              .toDouble()
         : _transformationController.value
-            .getMaxScaleOnAxis()
-            .clamp(.1, 6.0)
-            .toDouble();
+              .getMaxScaleOnAxis()
+              .clamp(.1, 6.0)
+              .toDouble();
     final bucket = (rawScale * 4).round() / 4;
     if ((bucket - _pdfRenderScaleBucket).abs() < .01) return;
     _pdfQualityTimer?.cancel();
@@ -3106,8 +3207,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   }
 
   void _handlePageTransformChanged() {
-    if (!_correctingPageTransform &&
-        _pageViewportWidth > 0) {
+    if (!_correctingPageTransform && _pageViewportWidth > 0) {
       _correctingPageTransform = true;
       _clampPageHorizontalTransform();
       _correctingPageTransform = false;
@@ -3211,9 +3311,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   /// unchanged for pdfrx's single Listener spanning every page.
   T _transformedForPdfrxPage<T extends PointerEvent>(T event, Rect pageRect) {
     final base = event.transform ?? Matrix4.identity();
-    final offset =
-        Matrix4.translationValues(-pageRect.left, -pageRect.top, 0)
-          ..multiply(base);
+    final offset = Matrix4.translationValues(-pageRect.left, -pageRect.top, 0)
+      ..multiply(base);
     // .transformed() always returns an instance of the same concrete
     // subclass as `event` (see PointerEvent.transformed's doc comment) —
     // just typed as the PointerEvent base in its signature.
@@ -3221,7 +3320,18 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   }
 
   bool _shouldCapturePdfrxPointer(PointerDownEvent event) {
-    return _isStylus(event) || event.kind == PointerDeviceKind.mouse;
+    if (_isStylus(event) || event.kind == PointerDeviceKind.mouse) return true;
+    if (event.kind != PointerDeviceKind.touch ||
+        _tool != InkTool.lasso ||
+        !_hasSelection) {
+      return false;
+    }
+    final hit = _resolvePdfrxPageAt(event.localPosition);
+    if (hit == null || hit.pageIndex != _currentPageIndex) return false;
+    return _selectionContainsLocalOffset(
+      event.localPosition - hit.rect.topLeft,
+      hit.rect.size,
+    );
   }
 
   void _handlePdfrxPointerDown(PointerDownEvent event) {
@@ -3235,14 +3345,16 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     // Stay on the page the stroke started on for the rest of the gesture,
     // even if the pointer position now resolves just outside its rect
     // (e.g. a fast stroke crossing the page edge mid-move).
-    final rect = _pdfrxScreenRectForPage(_currentPageIndex) ??
+    final rect =
+        _pdfrxScreenRectForPage(_currentPageIndex) ??
         _resolvePdfrxPageAt(event.localPosition)?.rect;
     if (rect == null) return;
     _pointerMove(_transformedForPdfrxPage(event, rect), rect.size);
   }
 
   void _handlePdfrxPointerUp(PointerEvent event) {
-    final rect = _pdfrxScreenRectForPage(_currentPageIndex) ??
+    final rect =
+        _pdfrxScreenRectForPage(_currentPageIndex) ??
         _resolvePdfrxPageAt(event.localPosition)?.rect;
     _pointerUp(
       rect != null ? _transformedForPdfrxPage(event, rect) : event,
@@ -3272,6 +3384,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       eraserCursor: isCurrent && _temporaryEraser ? _eraserCursor : null,
       eraserDiameter: _eraserCanvasDiameter,
       eraserBorderWidth: _eraserGeometry.canvasBorderWidth,
+      images: _decodedImages,
     ).paintInto(canvas, pageRect);
   }
 
@@ -3283,20 +3396,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       gestures: <Type, GestureRecognizerFactory>{
         _ConditionalEagerGestureRecognizer:
             GestureRecognizerFactoryWithHandlers<
-                _ConditionalEagerGestureRecognizer>(
-          () => _ConditionalEagerGestureRecognizer(
-            shouldAccept: _shouldCapturePdfrxPointer,
-            supportedDevices: const <PointerDeviceKind>{
-              PointerDeviceKind.touch,
-              PointerDeviceKind.stylus,
-              PointerDeviceKind.invertedStylus,
-              PointerDeviceKind.mouse,
-            },
-          ),
-          (recognizer) {
-            recognizer.shouldAccept = _shouldCapturePdfrxPointer;
-          },
-        ),
+              _ConditionalEagerGestureRecognizer
+            >(
+              () => _ConditionalEagerGestureRecognizer(
+                shouldAccept: _shouldCapturePdfrxPointer,
+                supportedDevices: const <PointerDeviceKind>{
+                  PointerDeviceKind.touch,
+                  PointerDeviceKind.stylus,
+                  PointerDeviceKind.invertedStylus,
+                  PointerDeviceKind.mouse,
+                },
+              ),
+              (recognizer) {
+                recognizer.shouldAccept = _shouldCapturePdfrxPointer;
+              },
+            ),
       },
       child: Listener(
         behavior: HitTestBehavior.opaque,
@@ -3308,7 +3422,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
           path,
           key: ValueKey('pdfrx-$path'),
           controller: _pdfrxController,
+          initialPageNumber: _nativePdfInitialPage + 1,
           params: pdfrx.PdfViewerParams(
+            backgroundColor: _editorWorkspaceColor(context),
             pagePaintCallbacks: [_paintInkForPdfrxPage],
           ),
         ),
@@ -3336,24 +3452,209 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
   }
 
-  void _addPage() {
-    _snapshot();
-    setState(() {
-      _pages.add([]);
-      _pageBackgrounds.add(null);
-      _pageAspectRatios.add(null);
-      _pagePdfPaths.add(null);
-      _pagePdfPageNumbers.add(null);
-      _currentPageIndex = _pages.length - 1;
-      _activeStroke = null;
-      _resetZoom();
-    });
-    if (_verticalPageMode) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollContinuousViewToPage(_currentPageIndex);
+  Future<void> _addPage() async {
+    if (_addingPage) return;
+    _addingPage = true;
+
+    final pageCountBefore = _pages.length;
+    final sourcePath = _canExportOriginalPdf ? _pagePdfPaths.first : null;
+    final nextAspectRatio = _pageAspectRatio(_currentPageIndex);
+    File? revisedPdf;
+
+    try {
+      if (sourcePath != null) {
+        revisedPdf = await PdfNoteBacking.appendBlankPage(
+          source: File(sourcePath),
+          documentsDirectory: await getApplicationDocumentsDirectory(),
+          documentId: widget.document.id,
+          expectedPageCount: pageCountBefore,
+          aspectRatio: nextAspectRatio,
+        );
+        if (!mounted) return;
+        if (_pages.length != pageCountBefore ||
+            !_canExportOriginalPdf ||
+            _pagePdfPaths.first != sourcePath) {
+          throw StateError('The note changed while the page was being added.');
+        }
+      }
+
+      // Page structure is not part of the ink-only undo snapshots. Extend
+      // existing history to the new page count so a later ink undo cannot
+      // accidentally remove the page and desynchronise its PDF metadata.
+      for (final snapshot in _undo) {
+        snapshot.add(<InkObject>[]);
+      }
+      _redo.clear();
+
+      setState(() {
+        if (revisedPdf != null) {
+          for (var index = 0; index < _pagePdfPaths.length; index++) {
+            _pagePdfPaths[index] = revisedPdf.path;
+          }
+        }
+        _pages.add(<InkObject>[]);
+        _pageBackgrounds.add(null);
+        _pageAspectRatios.add(revisedPdf == null ? null : nextAspectRatio);
+        _pagePdfPaths.add(revisedPdf?.path);
+        _pagePdfPageNumbers.add(
+          revisedPdf == null ? null : pageCountBefore + 1,
+        );
+        _currentPageIndex = _pages.length - 1;
+        _activeStroke = null;
+        _resetZoom();
+      });
+      if (_verticalPageMode && revisedPdf == null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollContinuousViewToPage(_currentPageIndex);
+        });
+      }
+      _scheduleSave();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not add page: $error')));
+      }
+    } finally {
+      _addingPage = false;
+    }
+  }
+
+  Future<void> _addImage() async {
+    if (_imagePickerOpen) return;
+    final previousTool = _tool;
+    _imagePickerOpen = true;
+    if (mounted) {
+      setState(() {
+        _tool = InkTool.image;
+        _zoomMode = false;
       });
     }
-    _scheduleSave();
+
+    File? storedFile;
+    ui.ImmutableBuffer? sourceBuffer;
+    ui.ImageDescriptor? descriptor;
+    ui.Codec? codec;
+    ui.Image? decodedImage;
+    var retainedImage = false;
+    var inserted = false;
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+        withData: true,
+      );
+      final picked = result?.files.single;
+      if (picked == null || !mounted) return;
+
+      Uint8List? sourceBytes = picked.bytes;
+      final sourcePath = picked.path;
+      if (sourceBytes == null && sourcePath != null) {
+        sourceBytes = await File(sourcePath).readAsBytes();
+      }
+      if (sourceBytes == null || sourceBytes.isEmpty) {
+        throw StateError('The selected image could not be read.');
+      }
+
+      sourceBuffer = await ui.ImmutableBuffer.fromUint8List(sourceBytes);
+      descriptor = await ui.ImageDescriptor.encoded(sourceBuffer);
+      const maximumImageDimension = 2560;
+      codec = await descriptor.instantiateCodec(
+        targetWidth:
+            descriptor.width >= descriptor.height &&
+                descriptor.width > maximumImageDimension
+            ? maximumImageDimension
+            : null,
+        targetHeight:
+            descriptor.height > descriptor.width &&
+                descriptor.height > maximumImageDimension
+            ? maximumImageDimension
+            : null,
+      );
+      final frame = await codec.getNextFrame();
+      decodedImage = frame.image;
+      final pixelWidth = decodedImage.width.toDouble();
+      final pixelHeight = decodedImage.height.toDouble();
+      final pngData = await decodedImage.toByteData(
+        format: ui.ImageByteFormat.png,
+      );
+      if (pngData == null || !mounted) {
+        throw StateError('The selected image could not be converted.');
+      }
+
+      final appDirectory = await getApplicationDocumentsDirectory();
+      final imageDirectory = Directory(
+        '${appDirectory.path}/ink_note_data/${widget.document.id}/images',
+      );
+      await imageDirectory.create(recursive: true);
+      storedFile = File(
+        '${imageDirectory.path}/image_${DateTime.now().microsecondsSinceEpoch}.png',
+      );
+      await storedFile.writeAsBytes(
+        pngData.buffer.asUint8List(
+          pngData.offsetInBytes,
+          pngData.lengthInBytes,
+        ),
+        flush: true,
+      );
+      if (!mounted) return;
+
+      final pageRatio = _pageAspectRatio(_currentPageIndex);
+      var normalizedWidth = .46;
+      var normalizedHeight =
+          normalizedWidth * (pixelHeight / pixelWidth) / pageRatio;
+      const maxNormalizedHeight = .52;
+      if (normalizedHeight > maxNormalizedHeight) {
+        final scale = maxNormalizedHeight / normalizedHeight;
+        normalizedWidth *= scale;
+        normalizedHeight = maxNormalizedHeight;
+      }
+      final imageObject = InkImage(
+        path: storedFile.path,
+        x: (1 - normalizedWidth) / 2,
+        y: (1 - normalizedHeight) / 2,
+        width: normalizedWidth,
+        height: normalizedHeight,
+        isSelected: true,
+      );
+      _snapshot();
+      setState(() {
+        _clearSelection();
+        _currentObjects.add(imageObject);
+        _decodedImages.remove(storedFile!.path)?.dispose();
+        _decodedImages[storedFile.path] = decodedImage!;
+        _selectionMoveMode = true;
+        _selectionLassoPath.clear();
+        _lassoPath.clear();
+        _activeStroke = null;
+        _tool = InkTool.lasso;
+      });
+      retainedImage = true;
+      inserted = true;
+      _scheduleSave();
+      if (_pdfrxController.isReady) _pdfrxController.invalidate();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Image added to this page.')),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not add image: $error')));
+      }
+    } finally {
+      _imagePickerOpen = false;
+      codec?.dispose();
+      descriptor?.dispose();
+      sourceBuffer?.dispose();
+      if (!retainedImage) decodedImage?.dispose();
+      if (!inserted && storedFile != null && await storedFile.exists()) {
+        await storedFile.delete();
+      }
+      if (mounted && !inserted && _tool == InkTool.image) {
+        setState(() => _tool = previousTool);
+      }
+    }
   }
 
   Future<void> _importPdf() async {
@@ -3379,9 +3680,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         '${appDirectory.path}/ink_note_pdf/${widget.document.id}/$importId',
       );
       await targetDirectory.create(recursive: true);
-      final storedPdf = await File(sourcePath).copy(
-        '${targetDirectory.path}/source.pdf',
-      );
+      final storedPdf = await File(
+        sourcePath,
+      ).copy('${targetDirectory.path}/source.pdf');
       document = await PdfDocument.openFile(storedPdf.path);
 
       final importedPages = <List<InkObject>>[];
@@ -3389,9 +3690,11 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       final importedAspectRatios = <double?>[];
       final importedPdfPaths = <String?>[];
       final importedPdfPageNumbers = <int?>[];
-      for (var pageNumber = 1;
-          pageNumber <= document.pagesCount;
-          pageNumber++) {
+      for (
+        var pageNumber = 1;
+        pageNumber <= document.pagesCount;
+        pageNumber++
+      ) {
         final page = await document.getPage(pageNumber);
         try {
           importedPages.add(<InkObject>[]);
@@ -3413,7 +3716,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
 
       _snapshot();
       setState(() {
-        final replaceEmptyStarterPage = _pages.length == 1 &&
+        final replaceEmptyStarterPage =
+            _pages.length == 1 &&
             _pages.first.isEmpty &&
             (_pageBackgrounds.isEmpty || _pageBackgrounds.first == null) &&
             (_pagePdfPaths.isEmpty || _pagePdfPaths.first == null);
@@ -3460,8 +3764,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _saveColorPresets() =>
-      InkStore.saveColorPresets(_colorPresets);
+  Future<void> _saveColorPresets() => InkStore.saveColorPresets(_colorPresets);
 
   Future<void> _saveHighlighterColorPresets() =>
       InkStore.saveHighlighterColorPresets(_highlighterColorPresets);
@@ -3567,8 +3870,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                       onTapDown: (details) async {
                         if (sampling) return;
                         final canvasContext = _canvasKey.currentContext;
-                        final renderObject =
-                            canvasContext?.findRenderObject();
+                        final renderObject = canvasContext?.findRenderObject();
                         if (renderObject is! RenderRepaintBoundary) return;
                         final local = renderObject.globalToLocal(
                           details.globalPosition,
@@ -3593,18 +3895,18 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                             image.dispose();
                             return;
                           }
-                          final pixelX = (local.dx /
-                                  renderObject.size.width *
-                                  image.width)
-                              .floor()
-                              .clamp(0, image.width - 1)
-                              .toInt();
-                          final pixelY = (local.dy /
-                                  renderObject.size.height *
-                                  image.height)
-                              .floor()
-                              .clamp(0, image.height - 1)
-                              .toInt();
+                          final pixelX =
+                              (local.dx / renderObject.size.width * image.width)
+                                  .floor()
+                                  .clamp(0, image.width - 1)
+                                  .toInt();
+                          final pixelY =
+                              (local.dy /
+                                      renderObject.size.height *
+                                      image.height)
+                                  .floor()
+                                  .clamp(0, image.height - 1)
+                                  .toInt();
                           final offset = (pixelY * image.width + pixelX) * 4;
                           final bytes = data.buffer.asUint8List();
                           final sampled = Color.fromARGB(
@@ -3715,8 +4017,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                 .substring(2)
                 .toUpperCase();
 
-            void closeAndApply() =>
-                Navigator.of(dialogContext).pop(selected);
+            void closeAndApply() => Navigator.of(dialogContext).pop(selected);
 
             return Material(
               color: Colors.transparent,
@@ -3745,19 +4046,27 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(24),
                             side: BorderSide(
-                              color: scheme.outlineVariant.withValues(alpha: .65),
+                              color: scheme.outlineVariant.withValues(
+                                alpha: .65,
+                              ),
                             ),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: ConstrainedBox(
                             constraints: BoxConstraints(
                               maxWidth: 470,
-                              maxHeight: media.size.height -
+                              maxHeight:
+                                  media.size.height -
                                   media.padding.vertical -
                                   (compact ? 132 : 158),
                             ),
                             child: SingleChildScrollView(
-                              padding: const EdgeInsets.fromLTRB(18, 10, 18, 18),
+                              padding: const EdgeInsets.fromLTRB(
+                                18,
+                                10,
+                                18,
+                                18,
+                              ),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -3780,8 +4089,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                           if (picked != null &&
                                               dialogContext.mounted) {
                                             setDialogState(
-                                              () => hsv =
-                                                  HSVColor.fromColor(picked),
+                                              () => hsv = HSVColor.fromColor(
+                                                picked,
+                                              ),
                                             );
                                           }
                                         },
@@ -3811,7 +4121,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                     selected: {pickerMode},
                                     showSelectedIcon: false,
                                     onSelectionChanged: (value) =>
-                                        setDialogState(() => pickerMode = value.first),
+                                        setDialogState(
+                                          () => pickerMode = value.first,
+                                        ),
                                   ),
                                   const SizedBox(height: 12),
                                   AnimatedSwitcher(
@@ -3820,18 +4132,20 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                         ? _ColorGridField(
                                             key: const ValueKey('grid'),
                                             hsv: hsv,
-                                            onChanged: (value) => setDialogState(
-                                              () => hsv = value,
-                                            ),
+                                            onChanged: (value) =>
+                                                setDialogState(
+                                                  () => hsv = value,
+                                                ),
                                           )
                                         : SizedBox(
                                             key: const ValueKey('spectrum'),
                                             height: compact ? 230 : 270,
                                             child: _ColorSpectrumField(
                                               hsv: hsv,
-                                              onChanged: (value) => setDialogState(
-                                                () => hsv = value,
-                                              ),
+                                              onChanged: (value) =>
+                                                  setDialogState(
+                                                    () => hsv = value,
+                                                  ),
                                             ),
                                           ),
                                   ),
@@ -3876,8 +4190,11 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                             vertical: 11,
                                           ),
                                           decoration: BoxDecoration(
-                                            color: scheme.surfaceContainerHighest,
-                                            borderRadius: BorderRadius.circular(999),
+                                            color:
+                                                scheme.surfaceContainerHighest,
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
                                           ),
                                           child: Text(
                                             'HEX $hex',
@@ -3913,7 +4230,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                           Navigator.of(dialogContext).pop();
                                         }
                                       },
-                                      icon: const Icon(Icons.delete_outline_rounded),
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                      ),
                                       label: const Text('Remove color'),
                                     ),
                                   ],
@@ -4009,14 +4328,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(22),
                             side: BorderSide(
-                              color: scheme.outlineVariant.withValues(alpha: .65),
+                              color: scheme.outlineVariant.withValues(
+                                alpha: .65,
+                              ),
                             ),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 470),
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
+                              padding: const EdgeInsets.fromLTRB(
+                                18,
+                                10,
+                                18,
+                                16,
+                              ),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -4027,8 +4353,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                           selection
                                               ? 'Selection color'
                                               : highlighter
-                                                  ? 'Highlighter color'
-                                                  : 'Pen color',
+                                              ? 'Highlighter color'
+                                              : 'Pen color',
                                           style: const TextStyle(
                                             fontSize: 19,
                                             fontWeight: FontWeight.w800,
@@ -4042,8 +4368,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                               await _pickColorFromCanvas();
                                           if (picked != null &&
                                               dialogContext.mounted) {
-                                            Navigator.of(dialogContext)
-                                                .pop(picked);
+                                            Navigator.of(
+                                              dialogContext,
+                                            ).pop(picked);
                                           }
                                         },
                                         icon: const Icon(
@@ -4060,13 +4387,14 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                   const SizedBox(height: 8),
                                   GridView.builder(
                                     shrinkWrap: true,
-                                    physics: const NeverScrollableScrollPhysics(),
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
                                     gridDelegate:
                                         const SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: 8,
-                                      crossAxisSpacing: 12,
-                                      mainAxisSpacing: 12,
-                                    ),
+                                          crossAxisCount: 8,
+                                          crossAxisSpacing: 12,
+                                          mainAxisSpacing: 12,
+                                        ),
                                     itemCount: colors.length + 1,
                                     itemBuilder: (context, index) {
                                       if (index == colors.length) {
@@ -4074,34 +4402,39 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                           onTap: () async {
                                             final selected =
                                                 await _showAdvancedColorPicker(
-                                              initialColor,
-                                              allowPresetActions: !highlighter,
-                                            );
+                                                  initialColor,
+                                                  allowPresetActions:
+                                                      !highlighter,
+                                                );
                                             if (selected != null &&
                                                 dialogContext.mounted) {
-                                              Navigator.of(dialogContext)
-                                                  .pop(selected);
+                                              Navigator.of(
+                                                dialogContext,
+                                              ).pop(selected);
                                             }
                                           },
                                         );
                                       }
 
                                       final color = colors[index];
-                                      final custom = !highlighter &&
+                                      final custom =
+                                          !highlighter &&
                                           index >= _defaultColorPresets.length;
                                       return _PaletteColorButton(
                                         color: color,
-                                        selected: color.toARGB32() ==
+                                        selected:
+                                            color.toARGB32() ==
                                             initialColor.toARGB32(),
-                                        onTap: () => Navigator.of(dialogContext)
-                                            .pop(color),
+                                        onTap: () => Navigator.of(
+                                          dialogContext,
+                                        ).pop(color),
                                         onLongPress: custom
                                             ? () async {
                                                 final replacement =
                                                     await _showAdvancedColorPicker(
-                                                  color,
-                                                  canRemove: true,
-                                                );
+                                                      color,
+                                                      canRemove: true,
+                                                    );
                                                 if (replacement != null &&
                                                     dialogContext.mounted) {
                                                   setDialogState(() {});
@@ -4219,17 +4552,36 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       '${tempRoot.path}/${safeTitle.isEmpty ? 'ink_note' : safeTitle}.pdf',
     );
 
+    final imageBytesByPath = <String, Uint8List>{};
+    for (final image in _pages.expand((page) => page.whereType<InkImage>())) {
+      if (imageBytesByPath.containsKey(image.path)) continue;
+      final file = File(image.path);
+      if (!await file.exists()) {
+        throw StateError('An inserted image required for export is missing.');
+      }
+      imageBytesByPath[image.path] = await file.readAsBytes();
+    }
+
     final exported = PdfVectorExporter.export(
       sourcePdf: await sourceFile.readAsBytes(),
       pages: _pages,
+      imageBytesByPath: imageBytesByPath,
     );
     await finalFile.writeAsBytes(exported, flush: true);
     return finalFile;
   }
 
   Future<void> _shareCurrentPageAsPng() async {
+    await Future.wait(
+      _currentObjects.whereType<InkImage>().map(
+        (image) => _loadStoredImage(image.path),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) throw StateError('Editor is no longer open');
     final canvasContext = _canvasKey.currentContext;
     if (canvasContext == null) throw StateError('Canvas is not ready');
+    if (!canvasContext.mounted) throw StateError('Canvas is no longer open');
     final boundary = canvasContext.findRenderObject() as RenderRepaintBoundary;
     final image = await boundary.toImage(pixelRatio: 2);
     final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -4247,8 +4599,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     await Share.shareXFiles(
       [XFile(file.path)],
       text: widget.document.title,
-      sharePositionOrigin:
-          boundary.localToGlobal(Offset.zero) & boundary.size,
+      sharePositionOrigin: boundary.localToGlobal(Offset.zero) & boundary.size,
     );
   }
 
@@ -4337,10 +4688,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
               ),
               title: Text('Share as $mediaLabel'),
               subtitle: const Text('For viewing, printing, or submitting'),
-              onTap: () => Navigator.pop(
-                context,
-                _ExportChoice.pdfOrImage,
-              ),
+              onTap: () => Navigator.pop(context, _ExportChoice.pdfOrImage),
             ),
             const Divider(height: 1),
             ListTile(
@@ -4371,6 +4719,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
     final scheme = Theme.of(context).colorScheme;
+    final workspaceColor = _editorWorkspaceColor(context);
 
     return Scaffold(
       body: Column(
@@ -4408,22 +4757,23 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                       if (_showNativePdfReader)
                         Positioned.fill(
                           child: ColoredBox(
-                            color: Colors.white,
+                            color: workspaceColor,
                             child: NativePdfDocumentView(
                               key: ValueKey('native-pdf-${_nativePdfPath!}'),
                               path: _nativePdfPath!,
                               controller: _nativePdfController,
                               page: _nativePdfInitialPage,
                               tool: _tool.name,
-                              colorValue: (_tool == InkTool.highlighter
-                                      ? _highlighterColor
-                                      : _color)
-                                  .toARGB32(),
+                              colorValue:
+                                  (_tool == InkTool.highlighter
+                                          ? _highlighterColor
+                                          : _color)
+                                      .toARGB32(),
                               strokeWidth: _tool == InkTool.highlighter
                                   ? _highlighterWidth
                                   : _tool == InkTool.eraser
-                                      ? _eraserSize
-                                      : _width,
+                                  ? _eraserSize
+                                  : _width,
                               eraserMode: _eraserMode.name,
                               allowFinger: _settings.allowFinger,
                               smoothing: _smoothing,
@@ -4447,20 +4797,22 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                         ),
                       if (!_showNativePdfReader && !_usePdfrxViewer)
                         ColoredBox(
-                        color: scheme.surfaceContainerHighest
-                            .withValues(alpha: .55),
-                        child: LayoutBuilder(
+                          color: workspaceColor,
+                          child: LayoutBuilder(
                             builder: (context, viewportConstraints) {
                               _pageViewportWidth = viewportConstraints.maxWidth;
-                              _pageViewportHeight = viewportConstraints.maxHeight;
+                              _pageViewportHeight =
+                                  viewportConstraints.maxHeight;
 
                               Widget buildPage(
                                 int pageIndex, {
                                 Size? pageViewport,
                                 double contentScale = 1.0,
                               }) {
-                                final isCurrent = pageIndex == _currentPageIndex;
-                                final effectiveViewport = pageViewport ??
+                                final isCurrent =
+                                    pageIndex == _currentPageIndex;
+                                final effectiveViewport =
+                                    pageViewport ??
                                     Size(
                                       viewportConstraints.maxWidth,
                                       viewportConstraints.maxHeight,
@@ -4479,163 +4831,171 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                         color: Colors.white,
                                         child: LayoutBuilder(
                                           builder: (context, constraints) {
-                                              final size = Size(
-                                                constraints.maxWidth,
-                                                constraints.maxHeight,
-                                              );
-                                              final canvas = RepaintBoundary(
-                                                key: isCurrent ? _canvasKey : null,
-                                                child: ColoredBox(
-                                                  color: Colors.white,
-                                                  child: Stack(
-                                                    fit: StackFit.expand,
-                                                    children: [
-                                                      if (pageIndex <
-                                                              _pagePdfPaths.length &&
-                                                          _pagePdfPaths[pageIndex] !=
-                                                              null &&
-                                                          pageIndex <
-                                                              _pagePdfPageNumbers.length &&
-                                                          _pagePdfPageNumbers[
-                                                                  pageIndex] !=
-                                                              null)
-                                                        if (isCurrent &&
-                                                            !_verticalPageMode &&
-                                                            defaultTargetPlatform ==
-                                                                TargetPlatform
-                                                                    .iOS)
-                                                          // Current page, single-page view mode,
-                                                          // iOS: swap the raster fallback for a
-                                                          // native PDFView resized to match the
-                                                          // current zoom bucket. The 1/bucket scale
-                                                          // cancels the resize locally (visual
-                                                          // footprint stays paperWidth, matching
-                                                          // every other layer here), so
-                                                          // InteractiveViewer's own live zoom still
-                                                          // applies exactly once on top — this only
-                                                          // changes what resolution PDFKit renders
-                                                          // at, not alignment.
-                                                          Align(
-                                                            alignment:
-                                                                Alignment
-                                                                    .topLeft,
-                                                            child:
-                                                                Transform.scale(
-                                                              scale: 1 /
+                                            final size = Size(
+                                              constraints.maxWidth,
+                                              constraints.maxHeight,
+                                            );
+                                            final canvas = RepaintBoundary(
+                                              key: isCurrent
+                                                  ? _canvasKey
+                                                  : null,
+                                              child: ColoredBox(
+                                                color: Colors.white,
+                                                child: Stack(
+                                                  fit: StackFit.expand,
+                                                  children: [
+                                                    if (pageIndex <
+                                                            _pagePdfPaths
+                                                                .length &&
+                                                        _pagePdfPaths[pageIndex] !=
+                                                            null &&
+                                                        pageIndex <
+                                                            _pagePdfPageNumbers
+                                                                .length &&
+                                                        _pagePdfPageNumbers[pageIndex] !=
+                                                            null)
+                                                      if (isCurrent &&
+                                                          !_verticalPageMode &&
+                                                          defaultTargetPlatform ==
+                                                              TargetPlatform
+                                                                  .iOS)
+                                                        // Current page, single-page view mode,
+                                                        // iOS: swap the raster fallback for a
+                                                        // native PDFView resized to match the
+                                                        // current zoom bucket. The 1/bucket scale
+                                                        // cancels the resize locally (visual
+                                                        // footprint stays paperWidth, matching
+                                                        // every other layer here), so
+                                                        // InteractiveViewer's own live zoom still
+                                                        // applies exactly once on top — this only
+                                                        // changes what resolution PDFKit renders
+                                                        // at, not alignment.
+                                                        Align(
+                                                          alignment:
+                                                              Alignment.topLeft,
+                                                          child: Transform.scale(
+                                                            scale:
+                                                                1 /
+                                                                _pdfRenderScaleBucket,
+                                                            alignment: Alignment
+                                                                .topLeft,
+                                                            child: SizedBox(
+                                                              width:
+                                                                  paperWidth *
                                                                   _pdfRenderScaleBucket,
-                                                              alignment:
-                                                                  Alignment
-                                                                      .topLeft,
-                                                              child: SizedBox(
-                                                                width: paperWidth *
-                                                                    _pdfRenderScaleBucket,
-                                                                height: paperHeight *
-                                                                    _pdfRenderScaleBucket,
-                                                                child:
-                                                                    NativePdfPageDisplay(
-                                                                  key: ValueKey(
-                                                                    'native-${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
-                                                                  ),
-                                                                  path: _pagePdfPaths[
-                                                                      pageIndex]!,
-                                                                  pageNumber:
-                                                                      _pagePdfPageNumbers[
-                                                                          pageIndex]!,
+                                                              height:
+                                                                  paperHeight *
+                                                                  _pdfRenderScaleBucket,
+                                                              child: NativePdfPageDisplay(
+                                                                key: ValueKey(
+                                                                  'native-${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
                                                                 ),
+                                                                path:
+                                                                    _pagePdfPaths[pageIndex]!,
+                                                                pageNumber:
+                                                                    _pagePdfPageNumbers[pageIndex]!,
                                                               ),
                                                             ),
-                                                          )
-                                                        else
-                                                          AdaptivePdfPage(
-                                                            key: ValueKey(
-                                                              '${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
-                                                            ),
-                                                            pdfPath:
-                                                                _pagePdfPaths[pageIndex]!,
-                                                            pageNumber:
-                                                                _pagePdfPageNumbers[
-                                                                    pageIndex]!,
-                                                            enabled: (pageIndex -
-                                                                        _currentPageIndex)
-                                                                    .abs() <=
-                                                                4,
-                                                            // The Flutter drawing fallback keeps one
-                                                            // stable raster size for every nearby page.
-                                                            // It never changes page geometry or swaps a
-                                                            // page to a smaller preview when focus moves.
-                                                            quality: 1,
-                                                            renderScale:
-                                                                _pdfRenderScaleBucket,
-                                                          )
-                                                      else if (_pageBackgrounds[
-                                                              pageIndex] !=
-                                                          null)
-                                                        Image.file(
-                                                          File(
-                                                            _pageBackgrounds[
-                                                                pageIndex]!,
                                                           ),
-                                                          fit: BoxFit.contain,
-                                                          errorBuilder:
-                                                              (_, _, _) =>
-                                                                  const SizedBox(),
+                                                        )
+                                                      else
+                                                        AdaptivePdfPage(
+                                                          key: ValueKey(
+                                                            '${_pagePdfPaths[pageIndex]}#${_pagePdfPageNumbers[pageIndex]}',
+                                                          ),
+                                                          pdfPath:
+                                                              _pagePdfPaths[pageIndex]!,
+                                                          pageNumber:
+                                                              _pagePdfPageNumbers[pageIndex]!,
+                                                          enabled:
+                                                              (pageIndex -
+                                                                      _currentPageIndex)
+                                                                  .abs() <=
+                                                              4,
+                                                          // The Flutter drawing fallback keeps one
+                                                          // stable raster size for every nearby page.
+                                                          // It never changes page geometry or swaps a
+                                                          // page to a smaller preview when focus moves.
+                                                          quality: 1,
+                                                          renderScale:
+                                                              _pdfRenderScaleBucket,
+                                                        )
+                                                    else if (_pageBackgrounds[pageIndex] !=
+                                                        null)
+                                                      Image.file(
+                                                        File(
+                                                          _pageBackgrounds[pageIndex]!,
                                                         ),
-                                                      CustomPaint(
-                                                        painter: InkPainter(
-                                                          strokes:
-                                                              _pages[pageIndex],
-                                                          activeStroke: isCurrent
-                                                              ? _activeStroke
-                                                              : null,
-                                                          lassoPath: isCurrent
-                                                              ? _lassoPath
-                                                              : const <InkPoint>[],
-                                                          selectionPath: isCurrent
-                                                              ? _selectionLassoPath
-                                                              : const <InkPoint>[],
-                                                          template: widget
-                                                              .document
-                                                              .backgroundTemplate,
-                                                          contentScale:
-                                                              contentScale,
-                                                          eraserCursor: isCurrent &&
-                                                                  _temporaryEraser
-                                                              ? _eraserCursor
-                                                              : null,
-                                                          eraserDiameter:
-                                                              _eraserCanvasDiameter,
-                                                          eraserBorderWidth:
-                                                              _eraserGeometry.canvasBorderWidth,
-                                                        ),
-                                                        size: Size.infinite,
+                                                        fit: BoxFit.contain,
+                                                        errorBuilder:
+                                                            (_, _, _) =>
+                                                                const SizedBox(),
                                                       ),
-                                                    ],
-                                                  ),
+                                                    CustomPaint(
+                                                      painter: InkPainter(
+                                                        strokes:
+                                                            _pages[pageIndex],
+                                                        activeStroke: isCurrent
+                                                            ? _activeStroke
+                                                            : null,
+                                                        lassoPath: isCurrent
+                                                            ? _lassoPath
+                                                            : const <
+                                                                InkPoint
+                                                              >[],
+                                                        selectionPath: isCurrent
+                                                            ? _selectionLassoPath
+                                                            : const <
+                                                                InkPoint
+                                                              >[],
+                                                        template: widget
+                                                            .document
+                                                            .backgroundTemplate,
+                                                        contentScale:
+                                                            contentScale,
+                                                        eraserCursor:
+                                                            isCurrent &&
+                                                                _temporaryEraser
+                                                            ? _eraserCursor
+                                                            : null,
+                                                        eraserDiameter:
+                                                            _eraserCanvasDiameter,
+                                                        eraserBorderWidth:
+                                                            _eraserGeometry
+                                                                .canvasBorderWidth,
+                                                        images: _decodedImages,
+                                                      ),
+                                                      size: Size.infinite,
+                                                    ),
+                                                  ],
                                                 ),
-                                              );
+                                              ),
+                                            );
 
-                                              return _protectStylusDrawingFromViewportPan(
-                                                Listener(
-                                                  behavior:
-                                                      HitTestBehavior.opaque,
-                                                  onPointerDown: (event) {
-                                                    _activatePageForInput(
-                                                      pageIndex,
-                                                    );
-                                                    _pointerDown(event, size);
-                                                  },
-                                                  onPointerMove: (event) =>
-                                                      _pointerMove(event, size),
-                                                  onPointerUp: (event) => _pointerUp(event, size),
-                                                  onPointerCancel: (event) => _pointerUp(event, size),
-                                                  child: canvas,
-                                                ),
-                                              );
-                                            },
-                                          ),
+                                            return _protectStylusDrawingFromViewportPan(
+                                              Listener(
+                                                behavior:
+                                                    HitTestBehavior.opaque,
+                                                onPointerDown: (event) {
+                                                  _activatePageForInput(
+                                                    pageIndex,
+                                                  );
+                                                  _pointerDown(event, size);
+                                                },
+                                                onPointerMove: (event) =>
+                                                    _pointerMove(event, size),
+                                                onPointerUp: (event) =>
+                                                    _pointerUp(event, size),
+                                                onPointerCancel: (event) =>
+                                                    _pointerUp(event, size),
+                                                child: canvas,
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ),
-                                    );
+                                    ),
+                                  );
                                 }
 
                                 if (_verticalPageMode) {
@@ -4667,20 +5027,19 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                   trackpadScrollCausesScale: true,
                                   onInteractionStart: isCurrent
                                       ? (details) => _beginZoomGesture(
-                                            details,
-                                            continuous: false,
-                                          )
+                                          details,
+                                          continuous: false,
+                                        )
                                       : null,
                                   onInteractionUpdate: isCurrent
                                       ? (details) => _updateZoomGesture(
-                                            details,
-                                            continuous: false,
-                                          )
+                                          details,
+                                          continuous: false,
+                                        )
                                       : null,
                                   onInteractionEnd: isCurrent
-                                      ? (_) => _endZoomGesture(
-                                            continuous: false,
-                                          )
+                                      ? (_) =>
+                                            _endZoomGesture(continuous: false)
                                       : null,
                                   child: buildPaper(),
                                 );
@@ -4693,11 +5052,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                 );
                                 const pageGap = 8.0;
                                 var totalHeight = 0.0;
-                                for (var index = 0;
-                                    index < _pages.length;
-                                    index++) {
-                                  totalHeight += paperWidth *
-                                      _pageAspectRatio(index);
+                                for (
+                                  var index = 0;
+                                  index < _pages.length;
+                                  index++
+                                ) {
+                                  totalHeight +=
+                                      paperWidth * _pageAspectRatio(index);
                                   if (index < _pages.length - 1) {
                                     totalHeight += pageGap;
                                   }
@@ -4736,29 +5097,31 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                   interactionEndFrictionCoefficient: .00008,
                                   onInteractionStart: (details) =>
                                       _beginZoomGesture(
-                                    details,
-                                    continuous: true,
-                                  ),
+                                        details,
+                                        continuous: true,
+                                      ),
                                   onInteractionUpdate: (details) =>
                                       _updateZoomGesture(
-                                    details,
-                                    continuous: true,
-                                  ),
-                                  onInteractionEnd: (_) => _endZoomGesture(
-                                    continuous: true,
-                                  ),
+                                        details,
+                                        continuous: true,
+                                      ),
+                                  onInteractionEnd: (_) =>
+                                      _endZoomGesture(continuous: true),
                                   child: SizedBox(
                                     width: paperWidth,
                                     height: totalHeight,
                                     child: Column(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        for (var index = 0;
-                                            index < _pages.length;
-                                            index++) ...[
+                                        for (
+                                          var index = 0;
+                                          index < _pages.length;
+                                          index++
+                                        ) ...[
                                           SizedBox(
                                             width: paperWidth,
-                                            height: paperWidth *
+                                            height:
+                                                paperWidth *
                                                 _pageAspectRatio(index),
                                             child: buildPage(
                                               index,
@@ -4785,7 +5148,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                               return buildPage(_currentPageIndex);
                             },
                           ),
-                      ),
+                        ),
                       if (wide)
                         Positioned(
                           top: 8,
@@ -4797,10 +5160,14 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                 decoration: BoxDecoration(
                                   color: scheme.surface.withValues(alpha: .96),
                                   borderRadius: BorderRadius.circular(18),
-                                  border: Border.all(color: Theme.of(context).dividerColor),
+                                  border: Border.all(
+                                    color: Theme.of(context).dividerColor,
+                                  ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withValues(alpha: .06),
+                                      color: Colors.black.withValues(
+                                        alpha: .06,
+                                      ),
                                       blurRadius: 12,
                                       offset: const Offset(0, 4),
                                     ),
@@ -4811,30 +5178,35 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                    IconButton(
-                                      tooltip: _pagesPanelCollapsed
-                                          ? 'Open pages'
-                                          : 'Hide pages',
-                                      onPressed: () => setState(
-                                        () => _pagesPanelCollapsed = !_pagesPanelCollapsed,
+                                      IconButton(
+                                        tooltip: _pagesPanelCollapsed
+                                            ? 'Open pages'
+                                            : 'Hide pages',
+                                        onPressed: () => setState(
+                                          () => _pagesPanelCollapsed =
+                                              !_pagesPanelCollapsed,
+                                        ),
+                                        icon: Icon(
+                                          _pagesPanelCollapsed
+                                              ? Icons.view_sidebar_outlined
+                                              : Icons.view_sidebar_rounded,
+                                        ),
                                       ),
-                                      icon: Icon(
-                                        _pagesPanelCollapsed
-                                            ? Icons.view_sidebar_outlined
-                                            : Icons.view_sidebar_rounded,
+                                      const SizedBox(width: 2),
+                                      IconButton(
+                                        tooltip: 'Undo',
+                                        onPressed: _canUndoCurrent
+                                            ? _undoCurrentAction
+                                            : null,
+                                        icon: const Icon(Icons.undo_rounded),
                                       ),
-                                    ),
-                                    const SizedBox(width: 2),
-                                    IconButton(
-                                      tooltip: 'Undo',
-                                      onPressed: _canUndoCurrent ? _undoCurrentAction : null,
-                                      icon: const Icon(Icons.undo_rounded),
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Redo',
-                                      onPressed: _canRedoCurrent ? _redoCurrentAction : null,
-                                      icon: const Icon(Icons.redo_rounded),
-                                    ),
+                                      IconButton(
+                                        tooltip: 'Redo',
+                                        onPressed: _canRedoCurrent
+                                            ? _redoCurrentAction
+                                            : null,
+                                        icon: const Icon(Icons.redo_rounded),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -4860,11 +5232,12 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                         pagePdfPageNumbers: _pagePdfPageNumbers,
                                         currentPageIndex: _currentPageIndex,
                                         onSelectPage: _selectPage,
-                                        onAddPage: _addPage,
+                                        onAddPage: () => unawaited(_addPage()),
                                         collapsed: false,
                                         onToggleCollapsed: () => setState(
                                           () => _pagesPanelCollapsed = true,
                                         ),
+                                        images: _decodedImages,
                                       ),
                                     ),
                                   ),
@@ -4887,8 +5260,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                             width: _tool == InkTool.eraser
                                 ? _eraserSize
                                 : _tool == InkTool.highlighter
-                                    ? _highlighterWidth
-                                    : _width,
+                                ? _highlighterWidth
+                                : _width,
                             canUndo: _canUndoCurrent,
                             canRedo: _canRedoCurrent,
                             zoomMode: _zoomMode,
@@ -4900,8 +5273,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                     _tool == InkTool.lasso;
                                 final resolvedTool =
                                     tool == InkTool.pen && comingFromUtility
-                                        ? _lastPenTool
-                                        : tool;
+                                    ? _lastPenTool
+                                    : tool;
                                 _tool = resolvedTool;
                                 if (_isDrawingTool(resolvedTool)) {
                                   _lastDrawingTool = resolvedTool;
@@ -4912,6 +5285,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                 _zoomMode = false;
                               });
                             },
+                            onAddImage: () => unawaited(_addImage()),
                             onColor: (color) =>
                                 unawaited(_handleQuickColorTap(color)),
                             onOpenColorPalette: _chooseDrawingColor,
@@ -4931,13 +5305,11 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                             onEraserModeChanged: (value) =>
                                 setState(() => _eraserMode = value),
                             eraseHighlighterOnly: _eraseHighlighterOnly,
-                            onEraseHighlighterOnlyChanged: (value) => setState(
-                              () => _eraseHighlighterOnly = value,
-                            ),
+                            onEraseHighlighterOnlyChanged: (value) =>
+                                setState(() => _eraseHighlighterOnly = value),
                             eraserAutoDeselect: _eraserAutoDeselect,
-                            onEraserAutoDeselectChanged: (value) => setState(
-                              () => _eraserAutoDeselect = value,
-                            ),
+                            onEraserAutoDeselectChanged: (value) =>
+                                setState(() => _eraserAutoDeselect = value),
                             onPenTap: _selectOrOpenPenSettings,
                             onPenSettings: _showPenSettings,
                             onUndo: _undoCurrentAction,
@@ -4996,7 +5368,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                               onCopy: _copySelection,
                               onPaste: _pasteSelection,
                               onRemove: _removeSelection,
-                              showEdit: _tool == InkTool.text &&
+                              showEdit:
+                                  _tool == InkTool.text &&
                                   _currentObjects.any(
                                     (object) =>
                                         object is InkText && object.isSelected,
@@ -5020,10 +5393,11 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                             onNext: _currentPageIndex < _pages.length - 1
                                 ? () => _selectPage(_currentPageIndex + 1)
                                 : null,
-                            onAddPage: _addPage,
+                            onAddPage: () => unawaited(_addPage()),
                             collapsed: _pagesPanelCollapsed,
                             onToggleCollapsed: () => setState(
-                              () => _pagesPanelCollapsed = !_pagesPanelCollapsed,
+                              () =>
+                                  _pagesPanelCollapsed = !_pagesPanelCollapsed,
                             ),
                           ),
                         ),
@@ -5039,8 +5413,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   }
 }
 
-class _ConditionalEagerGestureRecognizer
-    extends OneSequenceGestureRecognizer {
+class _ConditionalEagerGestureRecognizer extends OneSequenceGestureRecognizer {
   _ConditionalEagerGestureRecognizer({
     required this.shouldAccept,
     super.supportedDevices,
@@ -5112,7 +5485,8 @@ class _PaletteColorButton extends StatelessWidget {
         child: selected
             ? Icon(
                 Icons.check_rounded,
-                color: ThemeData.estimateBrightnessForColor(color) ==
+                color:
+                    ThemeData.estimateBrightnessForColor(color) ==
                         Brightness.dark
                     ? Colors.white
                     : Colors.black,
@@ -5146,7 +5520,6 @@ class _AddColorButton extends StatelessWidget {
     );
   }
 }
-
 
 class _ColorGridField extends StatelessWidget {
   const _ColorGridField({
@@ -5228,10 +5601,7 @@ class _ColorGridField extends StatelessWidget {
 }
 
 class _ColorSpectrumField extends StatelessWidget {
-  const _ColorSpectrumField({
-    required this.hsv,
-    required this.onChanged,
-  });
+  const _ColorSpectrumField({required this.hsv, required this.onChanged});
 
   final HSVColor hsv;
   final ValueChanged<HSVColor> onChanged;
@@ -5246,9 +5616,9 @@ class _ColorSpectrumField extends StatelessWidget {
           gestures: <Type, GestureRecognizerFactory>{
             EagerGestureRecognizer:
                 GestureRecognizerFactoryWithHandlers<EagerGestureRecognizer>(
-              () => EagerGestureRecognizer(),
-              (_) {},
-            ),
+                  () => EagerGestureRecognizer(),
+                  (_) {},
+                ),
           },
           child: Listener(
             behavior: HitTestBehavior.opaque,
@@ -5272,12 +5642,7 @@ class _ColorSpectrumField extends StatelessWidget {
     final x = (position.dx / size.width).clamp(0.0, 1.0);
     final y = (position.dy / size.height).clamp(0.0, 1.0);
     onChanged(
-      HSVColor.fromAHSV(
-        hsv.alpha,
-        x * 360,
-        1,
-        (1 - y * .92).clamp(.08, 1.0),
-      ),
+      HSVColor.fromAHSV(hsv.alpha, x * 360, 1, (1 - y * .92).clamp(.08, 1.0)),
     );
   }
 }
@@ -5527,8 +5892,9 @@ class _SettingSection extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest
-            .withValues(alpha: .35),
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainerHighest.withValues(alpha: .35),
         borderRadius: BorderRadius.circular(22),
       ),
       child: Column(
@@ -5866,7 +6232,9 @@ class _DocumentTabStrip extends StatelessWidget {
                       Icon(
                         Icons.description_outlined,
                         size: 15,
-                        color: Colors.white.withValues(alpha: document.id == activeId ? 1 : .85),
+                        color: Colors.white.withValues(
+                          alpha: document.id == activeId ? 1 : .85,
+                        ),
                       ),
                       const SizedBox(width: 5),
                       ConstrainedBox(
