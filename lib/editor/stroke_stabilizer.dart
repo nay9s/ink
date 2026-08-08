@@ -12,9 +12,7 @@ import '../models.dart';
 /// lift-off position so stabilized strokes never end short.
 class StrokeStabilizer {
   InkPoint? _position;
-  InkPoint? _previousPosition;
   InkPoint? _lastRawPoint;
-  InkPoint? _previousRawPoint;
   Duration? _lastTimestamp;
 
   InkPoint? get lastRawPoint => _lastRawPoint;
@@ -23,9 +21,7 @@ class StrokeStabilizer {
 
   void start(InkPoint point, {Duration? timestamp}) {
     _position = point;
-    _previousPosition = null;
     _lastRawPoint = point;
-    _previousRawPoint = null;
     _lastTimestamp = timestamp;
   }
 
@@ -36,7 +32,6 @@ class StrokeStabilizer {
     Duration? timestamp,
   }) {
     final previous = _position;
-    final previousRaw = _lastRawPoint;
     _lastRawPoint = raw;
     if (previous == null) {
       start(raw, timestamp: timestamp);
@@ -45,8 +40,6 @@ class StrokeStabilizer {
 
     final amount = strength.clamp(0.0, 1.0).toDouble();
     if (amount <= 0 || !_isUsable(screenSize)) {
-      _previousPosition = previous;
-      _previousRawPoint = previousRaw;
       _position = raw;
       _lastTimestamp = timestamp;
       return raw;
@@ -55,10 +48,12 @@ class StrokeStabilizer {
     final elapsedMs = _elapsedMilliseconds(timestamp);
     _lastTimestamp = timestamp;
 
-    // A stronger setting uses a longer time constant, which removes more
-    // high-frequency hand jitter. Calculating alpha from elapsed time keeps
-    // the feel consistent between 60 Hz mouse and 120 Hz Pencil samples.
-    final timeConstantMs = 3.0 + 45.0 * math.pow(amount, 1.5);
+    // Keep the middle of the slider responsive: the previous linear mapping
+    // made the default 45% setting feel like the ink was attached by a rubber
+    // band. Squaring the setting reserves the heavier stabilization for the
+    // upper end while still filtering tiny Pencil jitter at normal settings.
+    final effectiveStrength = amount * amount;
+    final timeConstantMs = 1.5 + 28.0 * math.pow(effectiveStrength, 1.35);
     final follow = 1 - math.exp(-elapsedMs / timeConstantMs);
     final previousPixels = _toPixels(previous, screenSize);
     final rawPixels = _toPixels(raw, screenSize);
@@ -66,19 +61,17 @@ class StrokeStabilizer {
 
     // Bound latency like a short rubber band. Fast strokes remain responsive
     // instead of falling farther and farther behind the Pencil.
-    final maximumLag = 1.5 + 22.0 * math.pow(amount, 1.35);
+    final maximumLag = .75 + 8.0 * math.pow(effectiveStrength, 1.15);
     final lag = rawPixels - nextPixels;
     if (lag.distance > maximumLag) {
       nextPixels = rawPixels - lag / lag.distance * maximumLag;
     }
 
-    final pressureTimeConstant = math.max(2.0, timeConstantMs * .45);
+    final pressureTimeConstant = math.max(1.5, timeConstantMs * .35);
     final pressureFollow = 1 - math.exp(-elapsedMs / pressureTimeConstant);
     final pressure =
         previous.pressure + (raw.pressure - previous.pressure) * pressureFollow;
     final result = _fromPixels(nextPixels, pressure, screenSize);
-    _previousPosition = previous;
-    _previousRawPoint = previousRaw;
     _position = result;
     return result;
   }
@@ -94,58 +87,27 @@ class StrokeStabilizer {
 
     final previousPixels = _toPixels(previous, screenSize);
     final rawPixels = _toPixels(raw, screenSize);
-    final chord = rawPixels - previousPixels;
-    final distance = chord.distance;
+    final distance = (rawPixels - previousPixels).distance;
     final pressureDistance = (raw.pressure - previous.pressure).abs();
     if (distance < .15 && pressureDistance < .001) {
       reset();
       return const <InkPoint>[];
     }
 
-    // Continue along the recent stabilized and raw Pencil directions before
-    // arriving at lift-off. A direct interpolation to [raw] creates a visible
-    // elbow whenever the filter trails a curved stroke.
-    final previousPositionPixels = _previousPosition == null
-        ? previousPixels
-        : _toPixels(_previousPosition!, screenSize);
-    final previousRawPixels = _previousRawPoint == null
-        ? rawPixels
-        : _toPixels(_previousRawPoint!, screenSize);
-    final startMotion = previousPixels - previousPositionPixels;
-    final endMotion = rawPixels - previousRawPixels;
-    final startDirection = _forwardDirection(startMotion, chord);
-    final endDirection = _forwardDirection(endMotion, chord);
-    final startHandleLength = math.min(
-      distance * .48,
-      math.max(distance * .2, startMotion.distance * 1.8),
-    );
-    final endHandleLength = math.min(
-      distance * .4,
-      math.max(distance * .14, endMotion.distance * 1.15),
-    );
-    final control1 = previousPixels + startDirection * startHandleLength;
-    final control2 = rawPixels - endDirection * endHandleLength;
-    final estimatedLength =
-        (control1 - previousPixels).distance +
-        (control2 - control1).distance +
-        (rawPixels - control2).distance;
-    final steps = (estimatedLength / 2.5).ceil().clamp(1, 12).toInt();
+    // The lag is deliberately capped to only a few screen pixels, so a short
+    // interpolation is both smoother and safer than a cubic tail. The former
+    // cubic could overshoot when Pencil direction changed just before lift-off
+    // and leave a visible hook or zig-zag at the end of a stroke.
+    final steps = (distance / 1.5).ceil().clamp(1, 6).toInt();
     final tail = <InkPoint>[];
     for (var step = 1; step <= steps; step++) {
       final t = step / steps;
       final eased = t * t * (3 - 2 * t);
-      final point = _cubicPoint(
-        previousPixels,
-        control1,
-        control2,
-        rawPixels,
-        t,
-      );
       tail.add(
-        _fromPixels(
-          point,
+        InkPoint(
+          previous.x + (raw.x - previous.x) * eased,
+          previous.y + (raw.y - previous.y) * eased,
           previous.pressure + (raw.pressure - previous.pressure) * eased,
-          screenSize,
         ),
       );
     }
@@ -155,29 +117,8 @@ class StrokeStabilizer {
 
   void reset() {
     _position = null;
-    _previousPosition = null;
     _lastRawPoint = null;
-    _previousRawPoint = null;
     _lastTimestamp = null;
-  }
-
-  Offset _forwardDirection(Offset motion, Offset chord) {
-    if (chord.distanceSquared <= 1e-8) return const Offset(1, 0);
-    final chordDirection = chord / chord.distance;
-    if (motion.distanceSquared <= 1e-8) return chordDirection;
-    final motionDirection = motion / motion.distance;
-    final alignment =
-        motionDirection.dx * chordDirection.dx +
-        motionDirection.dy * chordDirection.dy;
-    return alignment < -.1 ? chordDirection : motionDirection;
-  }
-
-  Offset _cubicPoint(Offset p0, Offset p1, Offset p2, Offset p3, double t) {
-    final inverse = 1 - t;
-    return p0 * (inverse * inverse * inverse) +
-        p1 * (3 * inverse * inverse * t) +
-        p2 * (3 * inverse * t * t) +
-        p3 * (t * t * t);
   }
 
   double _elapsedMilliseconds(Duration? timestamp) {

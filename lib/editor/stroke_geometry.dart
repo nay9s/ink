@@ -15,6 +15,36 @@ class StrokeGeometrySample {
       );
 }
 
+/// Keeps live Pencil samples in their authored positions while removing only
+/// invalid values and near-duplicates.
+///
+/// Unlike [prepareStrokeSamples], this operation is causal: appending a new
+/// point never moves an older point. That prevents the visible part of an
+/// active stroke from wobbling behind the Pencil while more samples arrive.
+List<StrokeGeometrySample> prepareLiveStrokeSamples(
+  Iterable<StrokeGeometrySample> input, {
+  double minimumDistance = .05,
+}) {
+  final resolvedMinimum = minimumDistance.isFinite
+      ? math.max(0.0, minimumDistance)
+      : .05;
+  final minimumDistanceSquared = resolvedMinimum * resolvedMinimum;
+  final output = <StrokeGeometrySample>[];
+  for (final sample in input) {
+    if (!sample.offset.dx.isFinite ||
+        !sample.offset.dy.isFinite ||
+        !sample.pressure.isFinite) {
+      continue;
+    }
+    if (output.isEmpty ||
+        (sample.offset - output.last.offset).distanceSquared >=
+            minimumDistanceSquared) {
+      output.add(sample);
+    }
+  }
+  return output;
+}
+
 /// Normalizes sample spacing and removes high-frequency Pencil jitter.
 ///
 /// The filter is symmetric, so unlike live stabilization it adds no visible
@@ -149,6 +179,31 @@ List<StrokeGeometrySample> sampleSmoothStrokeCurve(
 Path createSmoothStrokePath(List<Offset> points) {
   final path = Path();
   appendSmoothStrokePath(path, points, moveToFirst: true);
+  return path;
+}
+
+/// Builds a low-cost path for a stroke that is still receiving Pencil input.
+///
+/// Midpoint quadratics only revise the newest segment when a point is added;
+/// the already-painted prefix stays stable instead of being globally
+/// resampled on every frame.
+Path createIncrementalStrokePath(List<Offset> points) {
+  final path = Path();
+  if (points.isEmpty) return path;
+  path.moveTo(points.first.dx, points.first.dy);
+  if (points.length == 1) return path;
+  if (points.length == 2) {
+    path.lineTo(points.last.dx, points.last.dy);
+    return path;
+  }
+  for (var index = 1; index < points.length - 1; index++) {
+    final current = points[index];
+    final next = points[index + 1];
+    final midpoint = (current + next) / 2;
+    path.quadraticBezierTo(current.dx, current.dy, midpoint.dx, midpoint.dy);
+  }
+  final last = points.last;
+  path.quadraticBezierTo(last.dx, last.dy, last.dx, last.dy);
   return path;
 }
 

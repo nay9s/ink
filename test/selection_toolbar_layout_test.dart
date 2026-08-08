@@ -6,6 +6,20 @@ void main() {
   const viewport = Size(800, 600);
   const toolbar = Size(240, 46);
 
+  test('layout gives the contextual toolbar loose constraints', () {
+    const delegate = SelectionToolbarLayoutDelegate(
+      anchor: Rect.fromLTWH(300, 300, 200, 100),
+    );
+    final constraints = delegate.getConstraintsForChild(
+      const BoxConstraints.tightFor(width: 800, height: 600),
+    );
+
+    expect(constraints.minWidth, 0);
+    expect(constraints.minHeight, 0);
+    expect(constraints.maxWidth, 800);
+    expect(constraints.maxHeight, 600);
+  });
+
   test('selection toolbar is centered above the lasso bounds', () {
     final position = selectionToolbarPosition(
       viewportSize: viewport,

@@ -61,7 +61,7 @@ class InkPainter extends CustomPainter {
     }
     if (currentActive is InkStroke &&
         currentActive.tool == InkTool.highlighter) {
-      _paintStroke(canvas, rect, currentActive);
+      _paintStroke(canvas, rect, currentActive, isActive: true);
     }
 
     for (final object in strokes) {
@@ -75,7 +75,7 @@ class InkPainter extends CustomPainter {
     }
     if (currentActive is InkStroke &&
         currentActive.tool != InkTool.highlighter) {
-      _paintStroke(canvas, rect, currentActive);
+      _paintStroke(canvas, rect, currentActive, isActive: true);
     } else if (currentActive is InkText) {
       _paintText(canvas, rect, currentActive);
     }
@@ -336,6 +336,15 @@ class InkPainter extends CustomPainter {
     sampleSpacing: 3 * _geometryUnit(rect),
   );
 
+  List<StrokeGeometrySample> _liveRenderPoints(InkStroke stroke, Rect rect) =>
+      prepareLiveStrokeSamples(
+        stroke.points.map(
+          (point) =>
+              StrokeGeometrySample(_offsetFor(point, rect), point.pressure),
+        ),
+        minimumDistance: .05 * _geometryUnit(rect),
+      );
+
   List<StrokeGeometrySample> _interpolatedPoints(
     List<StrokeGeometrySample> source,
     Rect rect,
@@ -398,7 +407,12 @@ class InkPainter extends CustomPainter {
     canvas.drawCircle(points.last.offset, widths.last / 2, fill);
   }
 
-  void _paintStroke(Canvas canvas, Rect rect, InkStroke stroke) {
+  void _paintStroke(
+    Canvas canvas,
+    Rect rect,
+    InkStroke stroke, {
+    bool isActive = false,
+  }) {
     if (stroke.points.isEmpty) return;
 
     final paint = Paint()
@@ -435,10 +449,12 @@ class InkPainter extends CustomPainter {
       return;
     }
 
-    final centerPoints = _filteredRenderPoints(stroke, rect);
-    final renderPoints = _interpolatedPoints(centerPoints, rect);
+    final centerPoints = isActive
+        ? _liveRenderPoints(stroke, rect)
+        : _filteredRenderPoints(stroke, rect);
 
     if (stroke.dashed) {
+      final renderPoints = _interpolatedPoints(centerPoints, rect);
       var dashPhase = 0.0;
       for (var index = 0; index < renderPoints.length - 1; index++) {
         final first = renderPoints[index];
@@ -461,18 +477,19 @@ class InkPainter extends CustomPainter {
     }
 
     if (stroke.tool == InkTool.fountainPen || stroke.tool == InkTool.brushPen) {
+      final renderPoints = _interpolatedPoints(centerPoints, rect);
       _drawVariableStroke(canvas, stroke, renderPoints, paint);
       return;
     }
 
     final averagePressure =
-        renderPoints
+        centerPoints
             .map((point) => point.pressure)
             .fold<double>(0, (sum, pressure) => sum + pressure) /
-        renderPoints.length;
+        centerPoints.length;
     paint.strokeWidth = _pressureWidth(stroke, averagePressure, .5);
     canvas.drawPath(
-      createSmoothStrokePath(
+      (isActive ? createIncrementalStrokePath : createSmoothStrokePath)(
         centerPoints.map((point) => point.offset).toList(growable: false),
       ),
       paint,

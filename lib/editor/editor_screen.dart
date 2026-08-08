@@ -1823,15 +1823,19 @@ class _EditorScreenState extends State<EditorScreen>
     if (stroke == null || stroke.points.isEmpty) return;
 
     final raw = _point(event, size);
+    final screenSize = _stabilizerScreenSize(size);
     final target = _usesStrokeStabilizer(stroke)
         ? _strokeStabilizer.filter(
             raw,
-            _stabilizerScreenSize(size),
+            screenSize,
             strength: _smoothing,
             timestamp: event.timeStamp,
           )
         : raw;
-    _appendPointTowards(target, size);
+    // Point density is measured in visible pixels. Without the transformed
+    // size, zooming a normal page spreads samples apart on screen and exposes
+    // angular joins while drawing.
+    _appendPointTowards(target, screenSize);
   }
 
   void _cancelLineAssist() {
@@ -5918,6 +5922,7 @@ class _SelectionActions extends StatelessWidget {
         ),
       ),
       child: Material(
+        key: const ValueKey('selection-actions-toolbar'),
         elevation: 10,
         color: scheme.surface.withValues(alpha: .98),
         clipBehavior: Clip.antiAlias,

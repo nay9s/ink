@@ -58,6 +58,11 @@ void main() {
     final cut = find.byTooltip('Cut');
     expect(cut, findsOneWidget);
     expect(tester.getCenter(cut).dy, greaterThan(primaryToolbarY + 100));
+    final actionsSize = tester.getSize(
+      find.byKey(const ValueKey('selection-actions-toolbar')),
+    );
+    expect(actionsSize.width, lessThan(260));
+    expect(actionsSize.height, lessThan(60));
 
     await tester.tap(cut);
     await tester.pumpAndSettle();
