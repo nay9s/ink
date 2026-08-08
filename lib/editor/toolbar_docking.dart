@@ -149,12 +149,12 @@ class ToolbarDragCallbacks {
     this.onCancel,
   });
 
-  final GestureLongPressStartCallback? onStart;
-  final GestureLongPressMoveUpdateCallback? onUpdate;
-  final GestureLongPressEndCallback? onEnd;
+  final ValueChanged<Offset>? onStart;
+  final ValueChanged<Offset>? onUpdate;
+  final VoidCallback? onEnd;
   final VoidCallback? onCancel;
 
-  bool get enabled => onStart != null;
+  bool get enabled => onStart != null && onUpdate != null && onEnd != null;
 }
 
 typedef DockedToolbarBuilder =
@@ -194,10 +194,9 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
 
   ToolbarDragCallbacks _dragCallbacks(EditorToolbarKind kind, Size viewport) =>
       ToolbarDragCallbacks(
-        onStart: (details) =>
-            _startDrag(kind, details.globalPosition, viewport),
-        onUpdate: (details) => _updateDrag(details.globalPosition, viewport),
-        onEnd: (details) => _finishDrag(details.globalPosition, viewport),
+        onStart: (globalPosition) => _startDrag(kind, globalPosition, viewport),
+        onUpdate: (globalPosition) => _updateDrag(globalPosition, viewport),
+        onEnd: () => _finishDrag(viewport),
         onCancel: _cancelDrag,
       );
 
@@ -243,10 +242,11 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
     });
   }
 
-  void _finishDrag(Offset globalPosition, Size viewport) {
+  void _finishDrag(Size viewport) {
     final kind = _dragging;
-    if (kind == null) return;
-    final result = _resolve(kind, _localPosition(globalPosition), viewport);
+    final position = _dragPosition;
+    if (kind == null || position == null) return;
+    final result = _resolve(kind, position, viewport);
     setState(() {
       _dragging = null;
       _dragPosition = null;
