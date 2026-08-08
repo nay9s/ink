@@ -11,6 +11,10 @@ import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf_manipulator/io.dart' as pdf_io;
 import 'package:pdf_manipulator/pdf_manipulator.dart' as pdfm;
+// pdfrx and pdfx both export PdfDocument/PdfPage classes; pdfrx is only
+// used for the small pure-PDF-notebook surface below, so keep it prefixed
+// rather than hiding symbols from the far more heavily used pdfx import.
+import 'package:pdfrx/pdfrx.dart' as pdfrx;
 import 'package:pdfx/pdfx.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -62,6 +66,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   final List<List<List<InkObject>>> _undo = [];
   final List<List<List<InkObject>>> _redo = [];
   final NativePdfController _nativePdfController = NativePdfController();
+  final pdfrx.PdfViewerController _pdfrxController = pdfrx.PdfViewerController();
+  int _pdfrxPageStart = 0;
 
   InkStroke? _activeStroke;
   InkTool _tool = InkTool.pen;
@@ -180,13 +186,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     return (_currentPageIndex - start).clamp(0, 1 << 20).toInt();
   }
 
-  // Retired: PDF pages now always render through the same Flutter path mixed
-  // notebooks already used (AdaptivePdfPage + InkPainter, see build()) so ink
-  // lives in _pages like every other page instead of being baked straight
-  // into the PDF file per stroke. _qualifiesForLegacyNativeReader below keeps
-  // the old detection logic alive only so the one-time importer can find
-  // documents that still have ink trapped in native PDF annotations from
-  // before this change.
+  // Retired: PDF pages no longer render through the old native platform-view
+  // engine (see build()). _qualifiesForLegacyNativeReader below keeps the
+  // same "single uninterrupted PDF" detection alive for two things that both
+  // still need it: the one-time importer that finds ink trapped in old
+  // native PDF annotations, and _usePdfrxViewer, which routes qualifying
+  // documents through pdfrx instead of the raster (AdaptivePdfPage) path
+  // mixed notebooks use.
   bool get _showNativePdfReader => false;
 
   bool get _qualifiesForLegacyNativeReader {
@@ -194,12 +200,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     if (path == null || _pages.isEmpty) return false;
     // A single native PDF view could only ever represent one uninterrupted
     // PDF document, so this only ever applied to notebooks that are a single
-    // imported PDF cover to cover.
+    // imported PDF cover to cover. pdfrx's PdfViewer has the same
+    // one-document constraint, so _usePdfrxViewer reuses this exact check.
     return _pagePdfPaths.length == _pages.length &&
         _pagePdfPaths.every((item) => item == path) &&
         _pagePdfPageNumbers.length == _pages.length &&
         _pagePdfPageNumbers.every((item) => item != null);
   }
+
+  /// Pure-PDF notebooks render through pdfrx (real vector rendering, native
+  /// text selection, no drift between the page and the ink layer under zoom
+  /// — validated on-device via the pdfrx spike) instead of the raster
+  /// AdaptivePdfPage fallback mixed notebooks still use. pdfrx's PdfViewer
+  /// owns its own multi-page continuous scrolling, so this applies
+  /// regardless of _verticalPageMode for a qualifying document.
+  bool get _usePdfrxViewer => _qualifiesForLegacyNativeReader;
 
   bool get _canUndoCurrent => _showNativePdfReader
       ? _nativePdfController.canUndo
@@ -262,6 +277,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     _continuousTransformationController.addListener(
       _handleContinuousTransformChanged,
     );
+    _pdfrxController.addListener(_handlePdfrxTransformChanged);
     _pages = widget.document.pages
         .map((page) => List<InkObject>.of(page))
         .toList();
@@ -492,6 +508,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     _continuousTransformationController
       ..removeListener(_handleContinuousTransformChanged)
       ..dispose();
+    _pdfrxController.removeListener(_handlePdfrxTransformChanged);
     super.dispose();
   }
 
@@ -2930,6 +2947,13 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       _activeStroke = null;
       _resetZoom();
     });
+    if (_usePdfrxViewer) {
+      final pageNumber = index - _pdfrxPageStart + 1;
+      if (pageNumber >= 1 && _pdfrxController.isReady) {
+        unawaited(_pdfrxController.goToPage(pageNumber: pageNumber));
+      }
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scrollContinuousViewToPage(index);
     });
@@ -3048,6 +3072,171 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       _selectionLassoPath.clear();
       _selectionMoveMode = false;
     });
+  }
+
+  // --- pdfrx (pure-PDF notebooks) -----------------------------------------
+  //
+  // pdfrx's PdfViewer owns one continuously-scrollable, multi-page view
+  // internally, unlike the mixed-notebook path where every page gets its
+  // own Listener closed over its own pageIndex. There's only one Listener
+  // here spanning every page, so incoming pointer positions have to be
+  // resolved to "which page, and where on it" using the controller's own
+  // Matrix4 (PdfViewerController extends ValueListenable<Matrix4>) and
+  // page layout — the same category of transform math _transformationController
+  // is already used for elsewhere in this file, not native/platform-view code.
+
+  void _handlePdfrxTransformChanged() {
+    if (!_usePdfrxViewer || !_pdfrxController.isReady) return;
+    final pageNumber = _pdfrxController.pageNumber;
+    if (pageNumber == null) return;
+    final index = _pdfrxPageStart + (pageNumber - 1);
+    if (index == _currentPageIndex || index < 0 || index >= _pages.length) {
+      return;
+    }
+    setState(() {
+      _currentPageIndex = index;
+      _activeStroke = null;
+      _lassoPath.clear();
+      _selectionLassoPath.clear();
+      _selectionMoveMode = false;
+    });
+    _scheduleViewStateSave();
+  }
+
+  /// The current on-screen rect (in the pdfrx Listener's local space) of
+  /// document page [pageIndex], or null if it isn't part of the active
+  /// pdfrx document or the viewer isn't laid out yet.
+  Rect? _pdfrxScreenRectForPage(int pageIndex) {
+    if (!_pdfrxController.isReady) return null;
+    final relativeIndex = pageIndex - _pdfrxPageStart;
+    final layouts = _pdfrxController.layout.pageLayouts;
+    if (relativeIndex < 0 || relativeIndex >= layouts.length) return null;
+    return MatrixUtils.transformRect(
+      _pdfrxController.value,
+      layouts[relativeIndex],
+    );
+  }
+
+  ({int pageIndex, Rect rect})? _resolvePdfrxPageAt(Offset localPosition) {
+    if (!_pdfrxController.isReady) return null;
+    final layouts = _pdfrxController.layout.pageLayouts;
+    final matrix = _pdfrxController.value;
+    for (var i = 0; i < layouts.length; i++) {
+      final screenRect = MatrixUtils.transformRect(matrix, layouts[i]);
+      if (screenRect.contains(localPosition)) {
+        return (pageIndex: _pdfrxPageStart + i, rect: screenRect);
+      }
+    }
+    return null;
+  }
+
+  /// Re-targets a pointer event so it looks like it landed directly on
+  /// [pageRect] at local (0, 0) — lets the existing per-page pointer
+  /// handlers below (written for one Listener per page) work completely
+  /// unchanged for pdfrx's single Listener spanning every page.
+  T _transformedForPdfrxPage<T extends PointerEvent>(T event, Rect pageRect) {
+    final base = event.transform ?? Matrix4.identity();
+    final offset =
+        Matrix4.translationValues(-pageRect.left, -pageRect.top, 0)
+          ..multiply(base);
+    // .transformed() always returns an instance of the same concrete
+    // subclass as `event` (see PointerEvent.transformed's doc comment) —
+    // just typed as the PointerEvent base in its signature.
+    return event.transformed(offset) as T;
+  }
+
+  bool _shouldCapturePdfrxPointer(PointerDownEvent event) {
+    return _isStylus(event) || event.kind == PointerDeviceKind.mouse;
+  }
+
+  void _handlePdfrxPointerDown(PointerDownEvent event) {
+    final hit = _resolvePdfrxPageAt(event.localPosition);
+    if (hit == null) return;
+    _activatePageForInput(hit.pageIndex);
+    _pointerDown(_transformedForPdfrxPage(event, hit.rect), hit.rect.size);
+  }
+
+  void _handlePdfrxPointerMove(PointerMoveEvent event) {
+    // Stay on the page the stroke started on for the rest of the gesture,
+    // even if the pointer position now resolves just outside its rect
+    // (e.g. a fast stroke crossing the page edge mid-move).
+    final rect = _pdfrxScreenRectForPage(_currentPageIndex) ??
+        _resolvePdfrxPageAt(event.localPosition)?.rect;
+    if (rect == null) return;
+    _pointerMove(_transformedForPdfrxPage(event, rect), rect.size);
+  }
+
+  void _handlePdfrxPointerUp(PointerEvent event) {
+    final rect = _pdfrxScreenRectForPage(_currentPageIndex) ??
+        _resolvePdfrxPageAt(event.localPosition)?.rect;
+    _pointerUp(
+      rect != null ? _transformedForPdfrxPage(event, rect) : event,
+      rect?.size,
+    );
+  }
+
+  /// Paints one page's ink through pdfrx's own paint pass
+  /// (PdfViewerParams.pagePaintCallbacks) instead of a separately
+  /// transformed/synced widget layer — validated on-device via the pdfrx
+  /// spike to stay pixel-locked to the page under pan/zoom.
+  void _paintInkForPdfrxPage(Canvas canvas, Rect pageRect, pdfrx.PdfPage page) {
+    final pageIndex = _pdfrxPageStart + (page.pageNumber - 1);
+    if (pageIndex < 0 || pageIndex >= _pages.length) return;
+    final isCurrent = pageIndex == _currentPageIndex;
+    final scale = _pdfrxController.isReady
+        ? _pdfrxController.value.getMaxScaleOnAxis().clamp(.1, 8.0).toDouble()
+        : 1.0;
+    InkPainter(
+      strokes: _pages[pageIndex],
+      activeStroke: isCurrent ? _activeStroke : null,
+      lassoPath: isCurrent ? _lassoPath : const <InkPoint>[],
+      selectionPath: isCurrent ? _selectionLassoPath : const <InkPoint>[],
+      template: widget.document.backgroundTemplate,
+      contentScale: scale,
+      eraserCursor: isCurrent && _temporaryEraser ? _eraserCursor : null,
+      eraserDiameter: _eraserCanvasDiameter,
+    ).paintInto(canvas, pageRect);
+  }
+
+  Widget _buildPdfrxDocument() {
+    final path = _nativePdfPath!;
+    _pdfrxPageStart = _nativePdfStartIndex ?? 0;
+    return RawGestureDetector(
+      behavior: HitTestBehavior.opaque,
+      gestures: <Type, GestureRecognizerFactory>{
+        _ConditionalEagerGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<
+                _ConditionalEagerGestureRecognizer>(
+          () => _ConditionalEagerGestureRecognizer(
+            shouldAccept: _shouldCapturePdfrxPointer,
+            supportedDevices: const <PointerDeviceKind>{
+              PointerDeviceKind.touch,
+              PointerDeviceKind.stylus,
+              PointerDeviceKind.invertedStylus,
+              PointerDeviceKind.mouse,
+            },
+          ),
+          (recognizer) {
+            recognizer.shouldAccept = _shouldCapturePdfrxPointer;
+          },
+        ),
+      },
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: _handlePdfrxPointerDown,
+        onPointerMove: _handlePdfrxPointerMove,
+        onPointerUp: _handlePdfrxPointerUp,
+        onPointerCancel: _handlePdfrxPointerUp,
+        child: pdfrx.PdfViewer.file(
+          path,
+          key: ValueKey('pdfrx-$path'),
+          controller: _pdfrxController,
+          params: pdfrx.PdfViewerParams(
+            pagePaintCallbacks: [_paintInkForPdfrxPage],
+          ),
+        ),
+      ),
+    );
   }
 
   void _activatePageForInput(int pageIndex) {
@@ -4127,6 +4316,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                 Expanded(
                   child: Stack(
                     children: [
+                      if (_usePdfrxViewer)
+                        Positioned.fill(child: _buildPdfrxDocument()),
                       if (_showNativePdfReader)
                         Positioned.fill(
                           child: ColoredBox(
@@ -4167,7 +4358,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                             ),
                           ),
                         ),
-                      if (!_showNativePdfReader)
+                      if (!_showNativePdfReader && !_usePdfrxViewer)
                         ColoredBox(
                         color: scheme.surfaceContainerHighest
                             .withValues(alpha: .55),

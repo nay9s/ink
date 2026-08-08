@@ -40,8 +40,9 @@ dependencies:
   file_picker: 10.3.10
   pdfx: ^2.9.2
   pdf_manipulator: 2.1.4
-  # Temporary — spike dependency only, see pdfrx_crispness_spike_screen.dart.
-  # Remove if the spike doesn't pan out; keep (and drop pdfx) if it does.
+  # Renders pure-PDF notebooks (real vector rendering, native text
+  # selection) in editor_screen.dart. pdfx/AdaptivePdfPage stays in use for
+  # mixed notebooks (blank + PDF pages interleaved).
   pdfrx: ^2.4.7
 
 dev_dependencies:

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../editor/pdfrx_crispness_spike_screen.dart';
 import '../main.dart';
 import '../models.dart';
 import '../store.dart';
@@ -205,32 +204,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: const Text('Permanently remove every note and folder'),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: _clearAllNotes,
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Temporary — throwaway dev entry point for the pdfrx
-              // crispness/overlay-alignment spike (see
-              // pdfrx_crispness_spike_screen.dart). Remove this section
-              // together with that screen once the spike's question is
-              // answered.
-              _SettingsSection(
-                title: 'Developer (temporary)',
-                subtitle: 'Throwaway test screens, not for regular use.',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.science_outlined),
-                  title: const Text('pdfrx crispness + overlay spike'),
-                  subtitle: const Text(
-                    'Check zoom sharpness and overlay alignment with pdfrx',
-                  ),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const PdfrxCrispnessSpikeScreen(),
-                      ),
-                    );
-                  },
                 ),
               ),
               const SizedBox(height: 26),
