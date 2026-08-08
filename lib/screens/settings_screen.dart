@@ -145,7 +145,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     const SizedBox(height: 10),
                     _SliderSetting(
-                      title: 'Stroke smoothing',
+                      title: 'Stroke stabilization',
                       valueLabel:
                           '${(_settings.defaultSmoothing * 100).round()}%',
                       value: _settings.defaultSmoothing,

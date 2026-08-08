@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 enum InkTool { pen, fountainPen, brushPen, highlighter, eraser, lasso, shape, text, image }
@@ -22,25 +20,6 @@ class InkPoint {
         (value['y'] as num).toDouble(),
         (value['p'] as num).toDouble(),
       );
-}
-
-InkPoint smoothInkPoint(InkPoint previous, InkPoint raw, double amount) {
-  final smoothing = amount.clamp(0.0, 1.0);
-  if (smoothing == 0) return raw;
-
-  final dx = raw.x - previous.x;
-  final dy = raw.y - previous.y;
-  final distance = math.sqrt(dx * dx + dy * dy);
-  final baseAlpha = 1.0 - smoothing * .82;
-  final speedBoost = (distance * 140).clamp(0.0, 1.0);
-  final alpha = baseAlpha + (1.0 - baseAlpha) * speedBoost;
-  final pressureAlpha = (.35 + alpha * .65).clamp(0.0, 1.0);
-
-  return InkPoint(
-    previous.x + dx * alpha,
-    previous.y + dy * alpha,
-    previous.pressure + (raw.pressure - previous.pressure) * pressureAlpha,
-  );
 }
 
 abstract class InkObject {
