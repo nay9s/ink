@@ -289,6 +289,7 @@ class FloatingEditorToolbar extends StatelessWidget {
         _AxisGap(axis: axis, extent: 7),
         for (final size in const [16.0, 28.0, 48.0])
           _EraserSizeButton(
+            axis: axis,
             size: size,
             selected: (width - size).abs() < 1,
             onTap: () => onWidth(size),
@@ -314,7 +315,12 @@ class FloatingEditorToolbar extends StatelessWidget {
 
     if (tool == InkTool.text) {
       return <Widget>[
-        _ColorDot(color: color, selected: true, onTap: onOpenColorPalette),
+        _ColorDot(
+          axis: axis,
+          color: color,
+          selected: true,
+          onTap: onOpenColorPalette,
+        ),
         _AxisGap(axis: axis, extent: 6),
         PopupMenuButton<double>(
           onSelected: onTextSizeChanged,
@@ -412,6 +418,7 @@ class FloatingEditorToolbar extends StatelessWidget {
               presetIndex++
             )
               _WidthButton(
+                axis: axis,
                 width: activePresets[presetIndex].size,
                 selected: (width - activePresets[presetIndex].size).abs() < .2,
                 onTap: () => onWidthPresetTap(presetIndex),
@@ -427,11 +434,13 @@ class FloatingEditorToolbar extends StatelessWidget {
         if (tool != InkTool.highlighter) ...[
           _AxisGap(axis: axis, extent: 3),
           _LineButton(
+            axis: axis,
             dashed: false,
             selected: !dashed,
             onTap: () => onDashedChanged(false),
           ),
           _LineButton(
+            axis: axis,
             dashed: true,
             selected: dashed,
             onTap: () => onDashedChanged(true),
@@ -444,6 +453,7 @@ class FloatingEditorToolbar extends StatelessWidget {
           child: _toolbarFlex(axis, [
             for (final itemColor in paletteColors)
               _ColorDot(
+                axis: axis,
                 color: itemColor,
                 selected: itemColor.toARGB32() == color.toARGB32(),
                 onTap: () => onColor(itemColor),
@@ -531,10 +541,10 @@ class _ToolbarAxisScrollerState extends State<_ToolbarAxisScroller> {
     return SizedBox(
       width: widget.axis == Axis.horizontal
           ? widget.extent
-          : _ToolbarCard.contentExtent,
+          : _ToolbarCard.verticalContentExtent,
       height: widget.axis == Axis.vertical
           ? widget.extent
-          : _ToolbarCard.contentExtent,
+          : _ToolbarCard.horizontalContentExtent,
       child: SingleChildScrollView(
         controller: _controller,
         scrollDirection: widget.axis,
@@ -555,14 +565,24 @@ class _ToolbarCard extends StatelessWidget {
   final Widget child;
   final bool prominent;
 
-  static const double height = 42;
-  static const double contentExtent = 36;
+  static const double horizontalExtent = 42;
+  static const double horizontalContentExtent = 36;
+  static const double verticalExtent = 52;
+  static const double verticalContentExtent = 44;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final cardExtent = prominent ? 52.0 : height;
-    final cardContentExtent = prominent ? 44.0 : contentExtent;
+    final cardExtent = axis == Axis.vertical
+        ? verticalExtent
+        : prominent
+        ? 52.0
+        : horizontalExtent;
+    final cardContentExtent = axis == Axis.vertical
+        ? verticalContentExtent
+        : prominent
+        ? 44.0
+        : horizontalContentExtent;
     return Container(
       width: axis == Axis.vertical ? cardExtent : null,
       height: axis == Axis.horizontal ? cardExtent : null,
@@ -629,15 +649,21 @@ class _ToolbarDragHandle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Tooltip(
-    message: '$label — hold and drag',
+    message: '$label — drag to move',
     child: GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onLongPressStart: callbacks.onStart,
-      onLongPressMoveUpdate: callbacks.onUpdate,
-      onLongPressEnd: callbacks.onEnd,
-      onLongPressCancel: callbacks.onCancel,
+      onPanStart: callbacks.onStart == null
+          ? null
+          : (details) => callbacks.onStart!(details.globalPosition),
+      onPanUpdate: callbacks.onUpdate == null
+          ? null
+          : (details) => callbacks.onUpdate!(details.globalPosition),
+      onPanEnd: callbacks.onEnd == null ? null : (_) => callbacks.onEnd!(),
+      onPanCancel: callbacks.onCancel,
       child: SizedBox(
-        width: axis == Axis.horizontal ? 24 : 40,
+        width: axis == Axis.horizontal
+            ? 24
+            : _ToolbarCard.verticalContentExtent,
         height: axis == Axis.vertical ? 24 : 40,
         child: Center(
           child: RotatedBox(
@@ -880,11 +906,13 @@ class _OptionChip extends StatelessWidget {
 
 class _WidthButton extends StatelessWidget {
   const _WidthButton({
+    required this.axis,
     required this.width,
     required this.selected,
     required this.onTap,
   });
 
+  final Axis axis;
   final double width;
   final bool selected;
   final VoidCallback onTap;
@@ -903,7 +931,9 @@ class _WidthButton extends StatelessWidget {
         child: Container(
           width: 32,
           height: 30,
-          margin: const EdgeInsets.symmetric(horizontal: 1.5),
+          margin: axis == Axis.horizontal
+              ? const EdgeInsets.symmetric(horizontal: 1.5)
+              : const EdgeInsets.symmetric(vertical: 1.5),
           decoration: BoxDecoration(
             color: selected
                 ? Theme.of(context).colorScheme.surfaceContainerHighest
@@ -928,10 +958,12 @@ class _WidthButton extends StatelessWidget {
 
 class _EraserSizeButton extends StatelessWidget {
   const _EraserSizeButton({
+    required this.axis,
     required this.size,
     required this.selected,
     required this.onTap,
   });
+  final Axis axis;
   final double size;
   final bool selected;
   final VoidCallback onTap;
@@ -940,9 +972,11 @@ class _EraserSizeButton extends StatelessWidget {
     onTap: onTap,
     customBorder: const CircleBorder(),
     child: Container(
-      width: 35,
-      height: 35,
-      margin: const EdgeInsets.symmetric(horizontal: 3),
+      width: axis == Axis.vertical ? 40 : 35,
+      height: axis == Axis.vertical ? 40 : 35,
+      margin: axis == Axis.horizontal
+          ? const EdgeInsets.symmetric(horizontal: 3)
+          : const EdgeInsets.symmetric(vertical: 2),
       alignment: Alignment.center,
       child: Container(
         width: (size * .55).clamp(14.0, 36.0).toDouble(),
@@ -964,10 +998,12 @@ class _EraserSizeButton extends StatelessWidget {
 
 class _LineButton extends StatelessWidget {
   const _LineButton({
+    required this.axis,
     required this.dashed,
     required this.selected,
     required this.onTap,
   });
+  final Axis axis;
   final bool dashed;
   final bool selected;
   final VoidCallback onTap;
@@ -976,9 +1012,11 @@ class _LineButton extends StatelessWidget {
     onTap: onTap,
     borderRadius: BorderRadius.circular(14),
     child: Container(
-      width: 35,
+      width: axis == Axis.vertical ? 40 : 35,
       height: 30,
-      margin: const EdgeInsets.symmetric(horizontal: 1.5),
+      margin: axis == Axis.horizontal
+          ? const EdgeInsets.symmetric(horizontal: 1.5)
+          : const EdgeInsets.symmetric(vertical: 1.5),
       decoration: BoxDecoration(
         color: selected
             ? Theme.of(context).colorScheme.surfaceContainerHighest
@@ -1020,10 +1058,12 @@ class _LinePainter extends CustomPainter {
 
 class _ColorDot extends StatelessWidget {
   const _ColorDot({
+    this.axis = Axis.horizontal,
     required this.color,
     required this.selected,
     required this.onTap,
   });
+  final Axis axis;
   final Color color;
   final bool selected;
   final VoidCallback onTap;
@@ -1034,7 +1074,9 @@ class _ColorDot extends StatelessWidget {
     child: Container(
       width: 26,
       height: 21,
-      margin: const EdgeInsets.symmetric(horizontal: 3),
+      margin: axis == Axis.horizontal
+          ? const EdgeInsets.symmetric(horizontal: 3)
+          : const EdgeInsets.symmetric(vertical: 3),
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,

@@ -1,4 +1,3 @@
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_note/editor/toolbar_docking.dart';
@@ -125,9 +124,7 @@ void main() {
     expect(legacy.optionsToolbarOrder, 1);
   });
 
-  testWidgets('long pressing a toolbar handle docks it independently', (
-    tester,
-  ) async {
+  testWidgets('one drag gesture docks a toolbar independently', (tester) async {
     var currentPrimary = primary;
     var currentOptions = options;
     ToolbarDockingResult? changed;
@@ -139,10 +136,14 @@ void main() {
     ) => GestureDetector(
       key: callbacks.enabled ? ValueKey('${kind.name}-test-handle') : null,
       behavior: HitTestBehavior.opaque,
-      onLongPressStart: callbacks.onStart,
-      onLongPressMoveUpdate: callbacks.onUpdate,
-      onLongPressEnd: callbacks.onEnd,
-      onLongPressCancel: callbacks.onCancel,
+      onPanStart: callbacks.onStart == null
+          ? null
+          : (details) => callbacks.onStart!(details.globalPosition),
+      onPanUpdate: callbacks.onUpdate == null
+          ? null
+          : (details) => callbacks.onUpdate!(details.globalPosition),
+      onPanEnd: callbacks.onEnd == null ? null : (_) => callbacks.onEnd!(),
+      onPanCancel: callbacks.onCancel,
       child: SizedBox(
         width: axis == Axis.horizontal ? 150 : 44,
         height: axis == Axis.horizontal ? 44 : 150,
@@ -178,7 +179,6 @@ void main() {
 
     final handle = find.byKey(const ValueKey('primary-test-handle'));
     final gesture = await tester.startGesture(tester.getCenter(handle));
-    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
     await gesture.moveTo(const Offset(12, 300));
     await tester.pump();
     await gesture.up();
