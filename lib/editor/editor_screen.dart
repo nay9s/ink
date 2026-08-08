@@ -9,8 +9,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf_manipulator/io.dart' as pdf_io;
-import 'package:pdf_manipulator/pdf_manipulator.dart' as pdfm;
 // pdfrx and pdfx both export PdfDocument/PdfPage classes; pdfrx is only
 // used for the small pure-PDF-notebook surface below, so keep it prefixed
 // rather than hiding symbols from the far more heavily used pdfx import.
@@ -19,15 +17,20 @@ import 'package:pdfx/pdfx.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models.dart';
+import '../noten_archive.dart';
 import '../store.dart';
 import 'adaptive_pdf_page.dart';
+import 'eraser_geometry.dart';
 import 'ink_painter.dart';
 import 'native_pdf_document_view.dart';
 import 'native_pdf_ink_importer.dart';
 import 'native_pdf_page_display.dart';
 import 'page_strip.dart';
+import 'pdf_vector_exporter.dart';
 import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
+
+enum _ExportChoice { pdfOrImage, noten }
 
 class EditorScreen extends StatefulWidget {
   const EditorScreen({
@@ -232,15 +235,29 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       .clamp(.1, 4.0)
       .toDouble();
 
-  double get _eraserCanvasDiameter {
-    final scale = _verticalPageMode
+  double get _eraserCanvasToScreenScale {
+    if (_usePdfrxViewer) {
+      if (!_pdfrxController.isReady) return 1.0;
+      return _pdfrxController.value.getMaxScaleOnAxis();
+    }
+    return _verticalPageMode
         ? _continuousViewScale
         : _transformationController.value
             .getMaxScaleOnAxis()
             .clamp(.1, 6.0)
             .toDouble();
-    return _eraserSize / scale;
   }
+
+  EraserGeometry get _eraserGeometry => EraserGeometry(
+        screenDiameter: _eraserSize,
+        canvasToScreenScale: _eraserCanvasToScreenScale,
+        // pdfrx resolves pointer positions against each page's already-
+        // transformed screen rect. The other viewers deliver page-local
+        // coordinates before their InteractiveViewer transform.
+        hitTestInScreenSpace: _usePdfrxViewer,
+      );
+
+  double get _eraserCanvasDiameter => _eraserGeometry.canvasDiameter;
 
   Offset? _lastSelectPosition;
   int? _pendingTouchTapPointer;
@@ -563,6 +580,23 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   List<List<InkObject>> _copyPages() =>
       _pages.map((page) => List<InkObject>.of(page)).toList();
 
+  InkDocument _documentSnapshot() {
+    final pagesForSave = _copyPages();
+    if (_activeStroke != null &&
+        _currentPageIndex >= 0 &&
+        _currentPageIndex < pagesForSave.length) {
+      pagesForSave[_currentPageIndex].add(_activeStroke!);
+    }
+    return widget.document.copyWith(
+      updatedAt: DateTime.now(),
+      pages: pagesForSave,
+      pageBackgrounds: List<String?>.of(_pageBackgrounds),
+      pageAspectRatios: List<double?>.of(_pageAspectRatios),
+      pagePdfPaths: List<String?>.of(_pagePdfPaths),
+      pagePdfPageNumbers: List<int?>.of(_pagePdfPageNumbers),
+    );
+  }
+
   void _snapshot() {
     _undo.add(_copyPages());
     if (_undo.length > 50) _undo.removeAt(0);
@@ -593,20 +627,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     if (!_dirty) return true;
 
     _dirty = false;
-    final pagesForSave = _copyPages();
-    if (_activeStroke != null &&
-        _currentPageIndex >= 0 &&
-        _currentPageIndex < pagesForSave.length) {
-      pagesForSave[_currentPageIndex].add(_activeStroke!);
-    }
-    final document = widget.document.copyWith(
-      updatedAt: DateTime.now(),
-      pages: pagesForSave,
-      pageBackgrounds: List<String?>.of(_pageBackgrounds),
-      pageAspectRatios: List<double?>.of(_pageAspectRatios),
-      pagePdfPaths: List<String?>.of(_pagePdfPaths),
-      pagePdfPageNumbers: List<int?>.of(_pagePdfPageNumbers),
-    );
+    final document = _documentSnapshot();
 
     try {
       await InkDocumentStore.save(document);
@@ -2861,14 +2882,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   }
 
   bool _eraseAt(InkPoint point, Size size) {
-    final viewScale = _verticalPageMode
-        ? _continuousViewScale
-        : _transformationController.value
-            .getMaxScaleOnAxis()
-            .clamp(.1, 6.0)
-            .toDouble();
-    final radius = (_eraserSize / 2) / viewScale;
-    const strokeScale = 1.0;
+    final geometry = _eraserGeometry;
+    final radius = geometry.hitRadius;
+    final strokeScale = geometry.hitTestStrokeScale;
     final center = Offset(point.x * size.width, point.y * size.height);
     final newObjects = <InkObject>[];
     var changed = false;
@@ -3255,6 +3271,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       template: widget.document.backgroundTemplate,
       eraserCursor: isCurrent && _temporaryEraser ? _eraserCursor : null,
       eraserDiameter: _eraserCanvasDiameter,
+      eraserBorderWidth: _eraserGeometry.canvasBorderWidth,
     ).paintInto(canvas, pageRect);
   }
 
@@ -3513,7 +3530,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   }
 
   Future<void> _addColorPreset(Color color) async {
-    if (_colorPresets.any((item) => item.toARGB32() == color.toARGB32())) return;
+    if (_colorPresets.any((item) => item.toARGB32() == color.toARGB32())) {
+      return;
+    }
     setState(() => _colorPresets = [..._colorPresets, color]);
     await _saveColorPresets();
   }
@@ -4182,36 +4201,6 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     return true;
   }
 
-  Future<Uint8List?> _renderAnnotationOverlay(int pageIndex) async {
-    if (pageIndex < 0 || pageIndex >= _pages.length || _pages[pageIndex].isEmpty) {
-      return null;
-    }
-    const logicalWidth = 1000.0;
-    final logicalHeight = logicalWidth * _pageAspectRatio(pageIndex);
-    const rasterScale = 2.0;
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder)..scale(rasterScale, rasterScale);
-    final objects = _pages[pageIndex]
-        .map((object) => object.copyWith(isSelected: false))
-        .toList();
-    InkPainter(
-      strokes: objects,
-      template: BackgroundTemplate.blank,
-    ).paint(canvas, Size(logicalWidth, logicalHeight));
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(
-      (logicalWidth * rasterScale).round(),
-      (logicalHeight * rasterScale).round(),
-    );
-    try {
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
-      return data?.buffer.asUint8List();
-    } finally {
-      image.dispose();
-      picture.dispose();
-    }
-  }
-
   Future<File> _exportAnnotatedOriginalPdf() async {
     final sourcePath = _pagePdfPaths.first!;
     final sourceFile = File(sourcePath);
@@ -4230,56 +4219,12 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       '${tempRoot.path}/${safeTitle.isEmpty ? 'ink_note' : safeTitle}.pdf',
     );
 
-    final engine = pdfm.Pdf();
-    pdfm.PdfEditor? editor;
-    PdfDocument? sourceDocument;
-    var changed = false;
-    try {
-      editor = await engine.edit(pdf_io.FileSource(sourceFile));
-      sourceDocument = await PdfDocument.openFile(sourcePath);
-      for (var pageIndex = 0; pageIndex < _pages.length; pageIndex++) {
-        final overlayBytes = await _renderAnnotationOverlay(pageIndex);
-        if (overlayBytes == null) continue;
-
-        final pdfPageNumber = _pagePdfPageNumbers[pageIndex]!;
-        final page = await sourceDocument.getPage(pdfPageNumber);
-        try {
-          final overlayFile = File(
-            '${tempRoot.path}/overlay_${pageIndex + 1}.png',
-          );
-          await overlayFile.writeAsBytes(overlayBytes, flush: true);
-          await editor.addImageStamp(
-            pdfPageNumber - 1,
-            pdf_io.FileSource(overlayFile),
-            rect: pdfm.PdfRect(
-              x: 0,
-              y: 0,
-              width: page.width,
-              height: page.height,
-            ),
-          );
-          changed = true;
-        } finally {
-          await page.close();
-        }
-      }
-
-      if (!changed) {
-        await sourceFile.copy(finalFile.path);
-        return finalFile;
-      }
-      final output = await pdf_io.FileSink.create(finalFile);
-      try {
-        await editor.save(output);
-      } finally {
-        await output.close();
-      }
-      return finalFile;
-    } finally {
-      await sourceDocument?.close();
-      await editor?.dispose();
-      await engine.dispose();
-    }
+    final exported = PdfVectorExporter.export(
+      sourcePdf: await sourceFile.readAsBytes(),
+      pages: _pages,
+    );
+    await finalFile.writeAsBytes(exported, flush: true);
+    return finalFile;
   }
 
   Future<void> _shareCurrentPageAsPng() async {
@@ -4339,6 +4284,88 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _shareNotenBackup() async {
+    _saveTimer?.cancel();
+    _viewSaveTimer?.cancel();
+    final saved = await _saveDocument();
+    if (!saved || !mounted) return;
+
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Creating editable Noten backup...')),
+      );
+      final bytes = await NotenArchive.encode(_documentSnapshot());
+      final directory = Directory(
+        '${(await getTemporaryDirectory()).path}/ink_note_noten_export_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await directory.create(recursive: true);
+      final file = File(
+        '${directory.path}/${NotenArchive.safeFileName(widget.document.title)}.${NotenArchive.extension}',
+      );
+      await file.writeAsBytes(bytes, flush: true);
+      if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: NotenArchive.mimeType)],
+        text: widget.document.title,
+        sharePositionOrigin: box == null
+            ? null
+            : box.localToGlobal(Offset.zero) & box.size,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not create Noten backup: $error')),
+      );
+    }
+  }
+
+  Future<void> _showExportOptions() async {
+    final mediaLabel = _canExportOriginalPdf ? 'PDF document' : 'PNG image';
+    final choice = await showModalBottomSheet<_ExportChoice>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                _canExportOriginalPdf
+                    ? Icons.picture_as_pdf_outlined
+                    : Icons.image_outlined,
+              ),
+              title: Text('Share as $mediaLabel'),
+              subtitle: const Text('For viewing, printing, or submitting'),
+              onTap: () => Navigator.pop(
+                context,
+                _ExportChoice.pdfOrImage,
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.inventory_2_outlined),
+              title: const Text('Share editable Noten backup'),
+              subtitle: const Text(
+                'Includes the original PDF, page backgrounds, and editable ink',
+              ),
+              onTap: () => Navigator.pop(context, _ExportChoice.noten),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case _ExportChoice.pdfOrImage:
+        await _exportAndShare();
+        return;
+      case _ExportChoice.noten:
+        await _shareNotenBackup();
+        return;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
@@ -4356,7 +4383,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
               onClose: _closeDocumentTab,
               onNewTab: _newDocumentTab,
               onHome: _exitEditor,
-              onShare: _exportAndShare,
+              onShare: _showExportOptions,
               onImportPdf: _importPdf,
               verticalPageMode: _verticalPageMode,
               onTogglePageMode: _togglePageMode,
@@ -4365,7 +4392,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
             _MobileEditorHeader(
               title: widget.document.title,
               onBack: _exitEditor,
-              onShare: _exportAndShare,
+              onShare: _showExportOptions,
               onImportPdf: _importPdf,
               verticalPageMode: _verticalPageMode,
               onTogglePageMode: _togglePageMode,
@@ -4577,6 +4604,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                                               : null,
                                                           eraserDiameter:
                                                               _eraserCanvasDiameter,
+                                                          eraserBorderWidth:
+                                                              _eraserGeometry.canvasBorderWidth,
                                                         ),
                                                         size: Size.infinite,
                                                       ),

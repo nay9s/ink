@@ -20,6 +20,7 @@ class InkPainter extends CustomPainter {
     this.contentScale = 1.0,
     this.eraserCursor,
     this.eraserDiameter = 0,
+    this.eraserBorderWidth = 1.5,
   });
 
   final List<InkObject> strokes;
@@ -34,6 +35,7 @@ class InkPainter extends CustomPainter {
   final double contentScale;
   final InkPoint? eraserCursor;
   final double eraserDiameter;
+  final double eraserBorderWidth;
 
   double get _scale => contentScale.clamp(.25, 8.0).toDouble();
 
@@ -624,6 +626,7 @@ class InkPainter extends CustomPainter {
     if (cursor == null || eraserDiameter <= 0) return;
     final center = _offsetFor(cursor, rect);
     final radius = eraserDiameter / 2;
+    final borderWidth = eraserBorderWidth.clamp(0.0, radius * 2).toDouble();
     final fill = Paint()
       ..isAntiAlias = true
       ..style = PaintingStyle.fill
@@ -631,10 +634,12 @@ class InkPainter extends CustomPainter {
     final border = Paint()
       ..isAntiAlias = true
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
+      ..strokeWidth = borderWidth
       ..color = Colors.black.withValues(alpha: .46);
     canvas.drawCircle(center, radius, fill);
-    canvas.drawCircle(center, radius, border);
+    // Keep the outline inside the hit area. A centered outline at [radius]
+    // makes the visible ring larger by half its stroke width.
+    canvas.drawCircle(center, math.max(0, radius - borderWidth / 2), border);
   }
 
   double _drawDashedSegment(
