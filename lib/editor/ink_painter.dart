@@ -39,42 +39,51 @@ class InkPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    _drawTemplate(canvas, size);
+    paintInto(canvas, Offset.zero & size);
+  }
+
+  /// Draws into an arbitrary target [rect] instead of always assuming the
+  /// canvas origin is the page's top-left corner — used both by [paint]
+  /// (rect always starts at the origin) and by native PDF page painting
+  /// (e.g. pdfrx's `pagePaintCallbacks`), where the page's current on-screen
+  /// rect moves and scales as the user pans/zooms a viewer we don't own.
+  void paintInto(Canvas canvas, Rect rect) {
+    _drawTemplate(canvas, rect);
     final currentActive = activeStroke;
 
     for (final stroke in strokes.whereType<InkStroke>()) {
       if (stroke.tool == InkTool.highlighter) {
-        _paintStroke(canvas, size, stroke);
+        _paintStroke(canvas, rect, stroke);
       }
     }
     if (currentActive is InkStroke &&
         currentActive.tool == InkTool.highlighter) {
-      _paintStroke(canvas, size, currentActive);
+      _paintStroke(canvas, rect, currentActive);
     }
 
     for (final object in strokes) {
       if (object is InkStroke && object.tool != InkTool.highlighter) {
-        _paintStroke(canvas, size, object);
+        _paintStroke(canvas, rect, object);
       } else if (object is InkText) {
-        _paintText(canvas, size, object);
+        _paintText(canvas, rect, object);
       }
     }
     if (currentActive is InkStroke &&
         currentActive.tool != InkTool.highlighter) {
-      _paintStroke(canvas, size, currentActive);
+      _paintStroke(canvas, rect, currentActive);
     } else if (currentActive is InkText) {
-      _paintText(canvas, size, currentActive);
+      _paintText(canvas, rect, currentActive);
     }
 
-    _drawLassoPath(canvas, size);
-    _drawSelectionLasso(canvas, size);
-    if (selectionPath.isEmpty) _drawSelectionBox(canvas, size);
-    _drawEraserCursor(canvas, size);
+    _drawLassoPath(canvas, rect);
+    _drawSelectionLasso(canvas, rect);
+    if (selectionPath.isEmpty) _drawSelectionBox(canvas, rect);
+    _drawEraserCursor(canvas, rect);
   }
 
-  Offset _offsetFor(InkPoint point, Size size) => Offset(
-        point.x * size.width,
-        point.y * size.height,
+  Offset _offsetFor(InkPoint point, Rect rect) => Offset(
+        rect.left + point.x * rect.width,
+        rect.top + point.y * rect.height,
       );
 
   Offset _midpoint(Offset a, Offset b) => Offset(
@@ -82,7 +91,7 @@ class InkPainter extends CustomPainter {
         (a.dy + b.dy) / 2,
       );
 
-  void _drawTemplate(Canvas canvas, Size size) {
+  void _drawTemplate(Canvas canvas, Rect rect) {
     if (template == BackgroundTemplate.blank) return;
 
     final paint = Paint()
@@ -92,41 +101,57 @@ class InkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     if (template == BackgroundTemplate.ruled) {
-      final spacing = size.height / 25;
-      for (double y = spacing * 2; y < size.height; y += spacing) {
-        canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      final spacing = rect.height / 25;
+      for (double y = spacing * 2; y < rect.height; y += spacing) {
+        canvas.drawLine(
+          Offset(rect.left, rect.top + y),
+          Offset(rect.right, rect.top + y),
+          paint,
+        );
       }
       final marginPaint = Paint()
         ..isAntiAlias = true
         ..color = Colors.redAccent.withValues(alpha: 0.3)
         ..strokeWidth = math.max(.75, _scale);
       canvas.drawLine(
-        Offset(size.width * 0.15, 0),
-        Offset(size.width * 0.15, size.height),
+        Offset(rect.left + rect.width * 0.15, rect.top),
+        Offset(rect.left + rect.width * 0.15, rect.bottom),
         marginPaint,
       );
     } else if (template == BackgroundTemplate.grid) {
-      final spacing = size.width / 20;
-      for (double y = 0; y < size.height; y += spacing) {
-        canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      final spacing = rect.width / 20;
+      for (double y = 0; y < rect.height; y += spacing) {
+        canvas.drawLine(
+          Offset(rect.left, rect.top + y),
+          Offset(rect.right, rect.top + y),
+          paint,
+        );
       }
-      for (double x = 0; x < size.width; x += spacing) {
-        canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+      for (double x = 0; x < rect.width; x += spacing) {
+        canvas.drawLine(
+          Offset(rect.left + x, rect.top),
+          Offset(rect.left + x, rect.bottom),
+          paint,
+        );
       }
     } else if (template == BackgroundTemplate.dotted) {
-      final spacing = size.width / 20;
+      final spacing = rect.width / 20;
       final dotPaint = Paint()
         ..isAntiAlias = true
         ..color = Colors.grey.withValues(alpha: 0.5);
-      for (double y = spacing; y < size.height; y += spacing) {
-        for (double x = spacing; x < size.width; x += spacing) {
-          canvas.drawCircle(Offset(x, y), 1.5 * _scale, dotPaint);
+      for (double y = spacing; y < rect.height; y += spacing) {
+        for (double x = spacing; x < rect.width; x += spacing) {
+          canvas.drawCircle(
+            Offset(rect.left + x, rect.top + y),
+            1.5 * _scale,
+            dotPaint,
+          );
         }
       }
     }
   }
 
-  void _drawLassoPath(Canvas canvas, Size size) {
+  void _drawLassoPath(Canvas canvas, Rect rect) {
     if (lassoPath.length < 2) return;
     final paint = Paint()
       ..isAntiAlias = true
@@ -136,12 +161,9 @@ class InkPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..strokeWidth = 2 * _scale;
     var phase = 0.0;
-    var previous = Offset(
-      lassoPath.first.x * size.width,
-      lassoPath.first.y * size.height,
-    );
+    var previous = _offsetFor(lassoPath.first, rect);
     for (final point in lassoPath.skip(1)) {
-      final next = Offset(point.x * size.width, point.y * size.height);
+      final next = _offsetFor(point, rect);
       phase = _drawDashedSegment(
         canvas,
         previous,
@@ -153,15 +175,15 @@ class InkPainter extends CustomPainter {
     }
   }
 
-  void _drawSelectionLasso(Canvas canvas, Size size) {
+  void _drawSelectionLasso(Canvas canvas, Rect rect) {
     if (selectionPath.length < 3) return;
-    final path = Path()
-      ..moveTo(
-        selectionPath.first.x * size.width,
-        selectionPath.first.y * size.height,
-      );
+    final path = Path()..moveTo(
+      _offsetFor(selectionPath.first, rect).dx,
+      _offsetFor(selectionPath.first, rect).dy,
+    );
     for (final point in selectionPath.skip(1)) {
-      path.lineTo(point.x * size.width, point.y * size.height);
+      final offset = _offsetFor(point, rect);
+      path.lineTo(offset.dx, offset.dy);
     }
     path.close();
 
@@ -181,12 +203,9 @@ class InkPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..strokeWidth = 2 * _scale;
     var phase = 0.0;
-    var previous = Offset(
-      selectionPath.first.x * size.width,
-      selectionPath.first.y * size.height,
-    );
+    var previous = _offsetFor(selectionPath.first, rect);
     for (final point in selectionPath.skip(1)) {
-      final next = Offset(point.x * size.width, point.y * size.height);
+      final next = _offsetFor(point, rect);
       phase = _drawDashedSegment(
         canvas,
         previous,
@@ -199,16 +218,13 @@ class InkPainter extends CustomPainter {
     _drawDashedSegment(
       canvas,
       previous,
-      Offset(
-        selectionPath.first.x * size.width,
-        selectionPath.first.y * size.height,
-      ),
+      _offsetFor(selectionPath.first, rect),
       border,
       phase: phase,
     );
   }
 
-  void _drawSelectionBox(Canvas canvas, Size size) {
+  void _drawSelectionBox(Canvas canvas, Rect rect) {
     var minX = double.infinity;
     var minY = double.infinity;
     var maxX = -double.infinity;
@@ -227,8 +243,8 @@ class InkPainter extends CustomPainter {
         }
       } else if (object is InkText) {
         final textWidth =
-            (object.text.length * object.fontSize * 0.6 * _scale) / size.width;
-        final textHeight = object.fontSize * _scale / size.height;
+            (object.text.length * object.fontSize * 0.6 * _scale) / rect.width;
+        final textHeight = object.fontSize * _scale / rect.height;
         minX = math.min(minX, object.x);
         maxX = math.max(maxX, object.x + textWidth);
         minY = math.min(minY, object.y);
@@ -239,18 +255,18 @@ class InkPainter extends CustomPainter {
     if (!hasSelection || minX == double.infinity) return;
 
     final padding = 10 * _scale;
-    final rect = Rect.fromLTRB(
-      minX * size.width - padding,
-      minY * size.height - padding,
-      maxX * size.width + padding,
-      maxY * size.height + padding,
+    final selectionRect = Rect.fromLTRB(
+      rect.left + minX * rect.width - padding,
+      rect.top + minY * rect.height - padding,
+      rect.left + maxX * rect.width + padding,
+      rect.top + maxY * rect.height + padding,
     );
     final paint = Paint()
       ..isAntiAlias = true
       ..color = Colors.blueAccent
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2 * _scale;
-    canvas.drawRect(rect, paint);
+    canvas.drawRect(selectionRect, paint);
 
     final handlePaint = Paint()
       ..isAntiAlias = true
@@ -262,10 +278,10 @@ class InkPainter extends CustomPainter {
       ..strokeWidth = 2 * _scale;
     final handleRadius = 6 * _scale;
     for (final point in [
-      rect.topLeft,
-      rect.topRight,
-      rect.bottomLeft,
-      rect.bottomRight,
+      selectionRect.topLeft,
+      selectionRect.topRight,
+      selectionRect.bottomLeft,
+      selectionRect.bottomRight,
     ]) {
       canvas.drawCircle(point, handleRadius, handlePaint);
       canvas.drawCircle(point, handleRadius, handleBorder);
@@ -310,11 +326,11 @@ class InkPainter extends CustomPainter {
 
   List<_RenderPoint> _filteredRenderPoints(
     InkStroke stroke,
-    Size size,
+    Rect rect,
   ) {
     final source = <_RenderPoint>[];
     for (final point in stroke.points) {
-      final candidate = _RenderPoint(_offsetFor(point, size), point.pressure);
+      final candidate = _RenderPoint(_offsetFor(point, rect), point.pressure);
       if (source.isEmpty ||
           (candidate.offset - source.last.offset).distanceSquared >= .01) {
         source.add(candidate);
@@ -380,8 +396,8 @@ class InkPainter extends CustomPainter {
     return path;
   }
 
-  List<_RenderPoint> _interpolatedPoints(InkStroke stroke, Size size) {
-    final source = _filteredRenderPoints(stroke, size);
+  List<_RenderPoint> _interpolatedPoints(InkStroke stroke, Rect rect) {
+    final source = _filteredRenderPoints(stroke, rect);
     if (source.length < 2) return source;
 
     final output = <_RenderPoint>[];
@@ -520,7 +536,7 @@ class InkPainter extends CustomPainter {
     canvas.drawCircle(points.last.offset, widths.last / 2, fill);
   }
 
-  void _paintStroke(Canvas canvas, Size size, InkStroke stroke) {
+  void _paintStroke(Canvas canvas, Rect rect, InkStroke stroke) {
     if (stroke.points.isEmpty) return;
 
     final paint = Paint()
@@ -541,8 +557,8 @@ class InkPainter extends CustomPainter {
 
     if (stroke.tool == InkTool.shape && stroke.points.length > 1) {
       paint.strokeWidth = stroke.width * _scale;
-      final start = _offsetFor(stroke.points.first, size);
-      final end = _offsetFor(stroke.points.last, size);
+      final start = _offsetFor(stroke.points.first, rect);
+      final end = _offsetFor(stroke.points.last, rect);
       if (stroke.dashed) {
         _drawDashedSegment(canvas, start, end, paint);
       } else {
@@ -555,12 +571,12 @@ class InkPainter extends CustomPainter {
       final point = stroke.points.first;
       final radius = _pressureWidth(stroke, point.pressure, 0) / 2;
       paint.style = PaintingStyle.fill;
-      canvas.drawCircle(_offsetFor(point, size), math.max(.75, radius), paint);
+      canvas.drawCircle(_offsetFor(point, rect), math.max(.75, radius), paint);
       return;
     }
 
-    final centerPoints = _filteredRenderPoints(stroke, size);
-    final renderPoints = _interpolatedPoints(stroke, size);
+    final centerPoints = _filteredRenderPoints(stroke, rect);
+    final renderPoints = _interpolatedPoints(stroke, rect);
 
     if (stroke.dashed) {
       var dashPhase = 0.0;
@@ -603,10 +619,10 @@ class InkPainter extends CustomPainter {
     );
   }
 
-  void _drawEraserCursor(Canvas canvas, Size size) {
+  void _drawEraserCursor(Canvas canvas, Rect rect) {
     final cursor = eraserCursor;
     if (cursor == null || eraserDiameter <= 0) return;
-    final center = _offsetFor(cursor, size);
+    final center = _offsetFor(cursor, rect);
     final radius = eraserDiameter / 2;
     final fill = Paint()
       ..isAntiAlias = true
@@ -656,7 +672,7 @@ class InkPainter extends CustomPainter {
     return (phase + distance) % cycle;
   }
 
-  void _paintText(Canvas canvas, Size size, InkText textObject) {
+  void _paintText(Canvas canvas, Rect rect, InkText textObject) {
     final textSpan = TextSpan(
       text: textObject.text,
       style: TextStyle(
@@ -667,15 +683,15 @@ class InkPainter extends CustomPainter {
         height: textObject.lineHeight,
       ),
     );
-    final maxWidth = math.max(48.0, textObject.width * size.width);
+    final maxWidth = math.max(48.0, textObject.width * rect.width);
     final textPainter = TextPainter(
       text: textSpan,
       textDirection: TextDirection.ltr,
       textAlign: textObject.textAlign,
     )..layout(maxWidth: maxWidth);
     final origin = Offset(
-      textObject.x * size.width,
-      textObject.y * size.height,
+      rect.left + textObject.x * rect.width,
+      rect.top + textObject.y * rect.height,
     );
     textPainter.paint(canvas, origin);
 
