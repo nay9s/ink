@@ -13,6 +13,15 @@ void main() {
     );
 
     expect(stored, 'noten-app://ink_note_pdf/note_1/source.pdf');
+
+    final storedImage = AppFilePaths.forStorage(
+      r'C:\Containers\Current\Documents\ink_note_data\note_1\images\photo.png',
+      documentsDirectory,
+    );
+    expect(
+      storedImage,
+      'noten-app://ink_note_data/note_1/images/photo.png',
+    );
   });
 
   test('migrates an absolute path from an obsolete iOS sandbox', () {

@@ -8,7 +8,7 @@ import 'package:ink_note/models.dart';
 import 'package:ink_note/noten_archive.dart';
 
 void main() {
-  test('round-trips editable ink and bundles referenced PDF assets', () async {
+  test('round-trips editable ink and bundles referenced assets', () async {
     final sourceRoot = await Directory.systemTemp.createTemp(
       'ink_note_noten_source_',
     );
@@ -26,10 +26,15 @@ void main() {
     final background = File(
       '${sourceRoot.path}${Platform.pathSeparator}paper.png',
     );
+    final insertedImage = File(
+      '${sourceRoot.path}${Platform.pathSeparator}photo.png',
+    );
     final pdfBytes = utf8.encode('%PDF-1.4\n% test PDF bytes\n%%EOF');
     final backgroundBytes = <int>[137, 80, 78, 71, 13, 10, 26, 10];
+    final insertedImageBytes = <int>[137, 80, 78, 71, 1, 2, 3, 4];
     await pdf.writeAsBytes(pdfBytes);
     await background.writeAsBytes(backgroundBytes);
+    await insertedImage.writeAsBytes(insertedImageBytes);
 
     final original = InkDocument(
       id: 'original',
@@ -46,6 +51,13 @@ void main() {
             pressureSensitivity: .8,
             dashed: true,
             points: const [InkPoint(.1, .2, .4), InkPoint(.3, .4, .9)],
+          ),
+          InkImage(
+            path: insertedImage.path,
+            x: .2,
+            y: .3,
+            width: .4,
+            height: .25,
           ),
         ],
         <InkObject>[],
@@ -67,6 +79,7 @@ void main() {
         'document.json',
         'assets/pdfs/0000.pdf',
         'assets/backgrounds/0000.png',
+        'assets/images/0000.png',
       ]),
     );
     expect(
@@ -88,6 +101,10 @@ void main() {
       'assets/pdfs/0000.pdf',
       'assets/pdfs/0000.pdf',
     ]);
+    expect(
+      ((archivedDocument['pages'] as List).first as List)[1]['path'],
+      'assets/images/0000.png',
+    );
 
     final importedAt = DateTime.utc(2026, 2, 3, 4, 5);
     final result = await NotenArchive.decode(
@@ -104,11 +121,17 @@ void main() {
     expect(result.document.updatedAt, importedAt);
     expect(result.document.folderId, 'new-folder');
     expect(result.document.pages, hasLength(2));
-    final stroke = result.document.pages.first.single as InkStroke;
+    final stroke = result.document.pages.first.whereType<InkStroke>().single;
     expect(stroke.tool, InkTool.pen);
     expect(stroke.color.toARGB32(), 0xFF123456);
     expect(stroke.dashed, isTrue);
     expect(stroke.points, hasLength(2));
+    final image = result.document.pages.first.whereType<InkImage>().single;
+    expect(image.x, .2);
+    expect(image.y, .3);
+    expect(image.width, .4);
+    expect(image.height, .25);
+    expect(await File(image.path).readAsBytes(), insertedImageBytes);
     expect(result.document.pagePdfPaths[0], result.document.pagePdfPaths[1]);
     expect(
       await File(result.document.pagePdfPaths.first!).readAsBytes(),

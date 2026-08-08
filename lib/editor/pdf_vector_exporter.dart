@@ -92,6 +92,7 @@ class PdfVectorExporter {
   static Uint8List export({
     required Uint8List sourcePdf,
     required List<List<InkObject>> pages,
+    Map<String, Uint8List> imageBytesByPath = const <String, Uint8List>{},
   }) {
     final document = pdf.PdfDocument.open(sourcePdf);
     if (pages.length > document.pageCount) {
@@ -102,6 +103,7 @@ class PdfVectorExporter {
     }
 
     final editor = pdf.PdfEditor(document);
+    final decodedImages = <String, pdf.PdfEmbeddableImage>{};
     var changed = false;
     for (var pageIndex = 0; pageIndex < pages.length; pageIndex++) {
       final page = document.page(pageIndex);
@@ -123,6 +125,17 @@ class PdfVectorExporter {
           changed = _addStroke(editor, pageIndex, mapper, stroke) || changed;
         } else if (object case final InkText text) {
           changed = _addText(editor, pageIndex, mapper, text) || changed;
+        } else if (object case final InkImage image) {
+          changed =
+              _addImage(
+                editor,
+                pageIndex,
+                mapper,
+                image,
+                imageBytesByPath,
+                decodedImages,
+              ) ||
+              changed;
         }
       }
     }
@@ -409,6 +422,47 @@ class PdfVectorExporter {
       color: argb & 0x00FFFFFF,
       borderWidth: 0,
       lineSpacing: text.lineHeight,
+      pageRotation: mapper.rotation,
+      author: 'Ink Note',
+    );
+    return true;
+  }
+
+  static bool _addImage(
+    pdf.PdfEditor editor,
+    int pageIndex,
+    PdfPageCoordinateMapper mapper,
+    InkImage image,
+    Map<String, Uint8List> imageBytesByPath,
+    Map<String, pdf.PdfEmbeddableImage> decodedImages,
+  ) {
+    if (image.path.isEmpty ||
+        !image.x.isFinite ||
+        !image.y.isFinite ||
+        !image.width.isFinite ||
+        !image.height.isFinite ||
+        image.width <= 0 ||
+        image.height <= 0) {
+      return false;
+    }
+    final bytes = imageBytesByPath[image.path];
+    if (bytes == null) {
+      throw StateError('Inserted image bytes are missing for ${image.path}.');
+    }
+    final decoded = decodedImages.putIfAbsent(
+      image.path,
+      () => pdf.PdfEmbeddableImage.decode(bytes),
+    );
+    final rect = mapper.rectFromDisplay(
+      left: image.x * mapper.displayWidth,
+      top: image.y * mapper.displayHeight,
+      width: image.width * mapper.displayWidth,
+      height: image.height * mapper.displayHeight,
+    );
+    editor.addImageStamp(
+      pageIndex,
+      rect,
+      decoded,
       pageRotation: mapper.rotation,
       author: 'Ink Note',
     );
