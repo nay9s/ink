@@ -26,6 +26,7 @@ import 'native_pdf_document_view.dart';
 import 'native_pdf_ink_importer.dart';
 import 'native_pdf_page_display.dart';
 import 'page_strip.dart';
+import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
 
 class EditorScreen extends StatefulWidget {
@@ -84,6 +85,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   InkTool _lastDrawingTool = InkTool.pen;
   InkTool _lastPenTool = InkTool.pen;
   InkPoint? _eraserCursor;
+  final StrokeStabilizer _strokeStabilizer = StrokeStabilizer();
   static const List<PenPreset> _defaultPenSizePresets = [
     PenPreset(size: 1.5, smoothing: .45),
     PenPreset(size: 2, smoothing: .45),
@@ -1019,6 +1021,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         // Pressing the active pen again enters read mode.
         _zoomMode = true;
         _activeStroke = null;
+        _strokeStabilizer.reset();
         _temporaryEraser = false;
         _eraserCursor = null;
       });
@@ -1361,20 +1364,32 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
                                     fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                                child: Slider(
-                                  value: localSmoothing,
-                                  min: 0,
-                                  max: 1,
-                                  divisions: 20,
-                                  onChanged: (value) {
-                                    setDialogState(
-                                      () => localSmoothing = value,
-                                    );
-                                    _setPenValues(
-                                      highlighter: isHighlighter,
-                                      smoothing: value,
-                                    );
-                                  },
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Slider(
+                                      value: localSmoothing,
+                                      min: 0,
+                                      max: 1,
+                                      divisions: 20,
+                                      onChanged: (value) {
+                                        setDialogState(
+                                          () => localSmoothing = value,
+                                        );
+                                        _setPenValues(
+                                          highlighter: isHighlighter,
+                                          smoothing: value,
+                                        );
+                                      },
+                                    ),
+                                    Text(
+                                      'Higher values reduce hand jitter and keep long strokes straighter, with a little more pen lag.',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                               if (!isHighlighter) ...[
@@ -1625,19 +1640,24 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     );
   }
 
-  InkPoint _smoothedPoint(PointerEvent event, Size size) {
-    final raw = _point(event, size);
-    final points = _activeStroke?.points;
-    if (points == null || points.isEmpty) return raw;
-    return smoothInkPoint(points.last, raw, _smoothing);
+  Size _stabilizerScreenSize(Size canvasSize) {
+    if (_usePdfrxViewer) return canvasSize;
+    final scale = (_verticalPageMode
+            ? _continuousViewScale
+            : _transformationController.value.getMaxScaleOnAxis())
+        .clamp(.1, 6.0)
+        .toDouble();
+    return Size(canvasSize.width * scale, canvasSize.height * scale);
   }
 
-  void _appendSmoothedPoints(PointerMoveEvent event, Size size) {
+  bool _usesStrokeStabilizer(InkStroke stroke) =>
+      stroke.tool != InkTool.shape;
+
+  void _appendPointTowards(InkPoint target, Size size) {
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.isEmpty) return;
 
     final start = stroke.points.last;
-    final target = _smoothedPoint(event, size);
     final dxPixels = (target.x - start.x) * size.width;
     final dyPixels = (target.y - start.y) * size.height;
     final distancePixels = math.sqrt(
@@ -1645,9 +1665,8 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     );
     if (distancePixels < .15) return;
 
-    // Keep the real Pencil samples as the dominant control points. Adding too
-    // many collinear points makes every sample boundary visible after zooming.
-    // Only bridge genuinely large gaps; the painter creates the smooth curve.
+    // Keep the stabilized samples as the dominant control points. Only bridge
+    // genuinely large gaps; the painter creates the smooth curve.
     final sampleSpacing = 3.2 + (1 - _smoothing) * 1.8;
     final steps =
         (distancePixels / sampleSpacing).ceil().clamp(1, 8).toInt();
@@ -1661,6 +1680,22 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
         ),
       );
     }
+  }
+
+  void _appendSmoothedPoints(PointerMoveEvent event, Size size) {
+    final stroke = _activeStroke;
+    if (stroke == null || stroke.points.isEmpty) return;
+
+    final raw = _point(event, size);
+    final target = _usesStrokeStabilizer(stroke)
+        ? _strokeStabilizer.filter(
+            raw,
+            _stabilizerScreenSize(size),
+            strength: _smoothing,
+            timestamp: event.timeStamp,
+          )
+        : raw;
+    _appendPointTowards(target, size);
   }
 
   void _cancelLineAssist() {
@@ -1689,7 +1724,10 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.length < 2) return;
     _activeStroke = stroke.copyWith(
-      points: [stroke.points.first, stroke.points.last],
+      points: [
+        stroke.points.first,
+        _strokeStabilizer.lastRawPoint ?? stroke.points.last,
+      ],
     );
     _straightLinePreview = true;
   }
@@ -1922,6 +1960,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
   void _cancelTouchInteractionForPinch() {
     if (_activePointerKind != PointerDeviceKind.touch) return;
     _cancelLineAssist();
+    _strokeStabilizer.reset();
 
     // A drawing/edit snapshot is created when the first finger goes down.
     // Restore it so starting a two-finger gesture never leaves a stray mark.
@@ -1976,6 +2015,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
       _activeStroke = null;
       _activePointer = null;
       _activePointerKind = null;
+      _strokeStabilizer.reset();
     }
     if (!_accept(event)) return;
 
@@ -1991,6 +2031,7 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     _activePointerKind = event.kind;
     _temporaryEraser = _eventIsEraser(event);
     _interactionChanged = false;
+    _strokeStabilizer.reset();
     _snapshot();
 
     setState(() {
@@ -2038,6 +2079,9 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
           dashed: activeTool == InkTool.highlighter ? false : _dashedStroke,
           pressureSensitivity: _pressureSensitivity,
         );
+        if (_usesStrokeStabilizer(_activeStroke!)) {
+          _strokeStabilizer.start(point, timestamp: event.timeStamp);
+        }
         _straightLinePreview = false;
         _interactionChanged = true;
       }
@@ -2678,6 +2722,21 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     }
     if (_activePointer != event.pointer) return;
     _cancelLineAssist();
+    final finishingStroke = _activeStroke;
+    if (finishingStroke != null &&
+        size != null &&
+        event is! PointerCancelEvent &&
+        !_straightLinePreview &&
+        _usesStrokeStabilizer(finishingStroke)) {
+      finishingStroke.points.addAll(
+        _strokeStabilizer.finish(
+          _point(event, size),
+          _stabilizerScreenSize(size),
+        ),
+      );
+    } else {
+      _strokeStabilizer.reset();
+    }
     setState(() {
       if (_tool == InkTool.lasso &&
           !_selectionMoveMode &&
