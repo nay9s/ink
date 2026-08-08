@@ -3175,19 +3175,6 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     );
   }
 
-  /// How far the user has zoomed in relative to the page's normal
-  /// fit-to-viewport size — 1.0 at that default view, growing only as the
-  /// user actively pinches in further. See _paintInkForPdfrxPage.
-  double _pdfrxScaleRelativeToFit() {
-    final controller = _pdfrxController;
-    if (!controller.isReady) return 1.0;
-    final baseline = controller.alternativeFitScale ?? controller.coverScale;
-    if (baseline <= 0) return 1.0;
-    return (controller.value.getMaxScaleOnAxis() / baseline)
-        .clamp(.25, 8.0)
-        .toDouble();
-  }
-
   /// Paints one page's ink through pdfrx's own paint pass
   /// (PdfViewerParams.pagePaintCallbacks) instead of a separately
   /// transformed/synced widget layer — validated on-device via the pdfrx
@@ -3196,21 +3183,17 @@ class _EditorScreenState extends State<EditorScreen> with WidgetsBindingObserver
     final pageIndex = _pdfrxPageStart + (page.pageNumber - 1);
     if (pageIndex < 0 || pageIndex >= _pages.length) return;
     final isCurrent = pageIndex == _currentPageIndex;
-    // getMaxScaleOnAxis() alone is document-point-to-screen-pixel density
-    // (a PDF page is ~612pt wide vs. 1000+ logical pixels on an iPad, so
-    // this is already several times larger than 1.0 before the user zooms
-    // in at all). stroke.width was calibrated for roughly 1:1 screen-pixel
-    // viewing, so dividing by the page's fit-to-viewport baseline scale
-    // gives a relative-to-normal-view zoom factor (1.0 at the default view,
-    // growing only with actual user zoom) instead of that raw density.
-    final scale = _pdfrxScaleRelativeToFit();
+    // pdfrx invokes this callback in document space, then its
+    // InteractiveViewer transforms the complete CustomPaint. That transform
+    // already scales both point coordinates and paint stroke widths. Feeding
+    // the viewer zoom into InkPainter would apply zoom to the width twice and
+    // make the ink grow quadratically while pinching.
     InkPainter(
       strokes: _pages[pageIndex],
       activeStroke: isCurrent ? _activeStroke : null,
       lassoPath: isCurrent ? _lassoPath : const <InkPoint>[],
       selectionPath: isCurrent ? _selectionLassoPath : const <InkPoint>[],
       template: widget.document.backgroundTemplate,
-      contentScale: scale,
       eraserCursor: isCurrent && _temporaryEraser ? _eraserCursor : null,
       eraserDiameter: _eraserCanvasDiameter,
     ).paintInto(canvas, pageRect);

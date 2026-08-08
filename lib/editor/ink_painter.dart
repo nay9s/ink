@@ -28,9 +28,9 @@ class InkPainter extends CustomPainter {
   final List<InkPoint> selectionPath;
   final BackgroundTemplate template;
 
-  /// Continuous-page zoom changes the page's laid-out size instead of applying
-  /// a canvas transform. Scale paint widths and text with the page so ink keeps
-  /// the same visual proportions while zooming.
+  /// Optional scale for callers that resize the page's layout without using a
+  /// canvas or ancestor transform. Never pass an InteractiveViewer zoom here:
+  /// its transform already scales paint widths along with the page.
   final double contentScale;
   final InkPoint? eraserCursor;
   final double eraserDiameter;
