@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../models.dart';
+import 'toolbar_docking.dart';
+
+enum FloatingToolbarSection { both, primary, options }
 
 class FloatingEditorToolbar extends StatelessWidget {
   const FloatingEditorToolbar({
@@ -47,6 +50,11 @@ class FloatingEditorToolbar extends StatelessWidget {
     required this.lineHeight,
     required this.onLineHeightChanged,
     required this.onAddImage,
+    this.canPaste = false,
+    this.onPaste,
+    this.section = FloatingToolbarSection.both,
+    this.axis = Axis.horizontal,
+    this.dragCallbacks = const ToolbarDragCallbacks(),
   });
 
   final InkTool tool;
@@ -91,27 +99,121 @@ class FloatingEditorToolbar extends StatelessWidget {
   final double lineHeight;
   final ValueChanged<double> onLineHeightChanged;
   final VoidCallback onAddImage;
+  final bool canPaste;
+  final VoidCallback? onPaste;
+  final FloatingToolbarSection section;
+  final Axis axis;
+  final ToolbarDragCallbacks dragCallbacks;
 
   static const quickWidths = [1.5, 2.0, 3.0];
 
-  bool get _isPen =>
+  bool get _isPenTool =>
       tool == InkTool.pen ||
       tool == InkTool.fountainPen ||
-      tool == InkTool.brushPen ||
-      tool == InkTool.highlighter ||
-      tool == InkTool.shape;
+      tool == InkTool.brushPen;
+
+  bool get _usesDrawingControls =>
+      _isPenTool || tool == InkTool.highlighter || tool == InkTool.shape;
 
   @override
   Widget build(BuildContext context) {
     final effectivePresets = presets.isNotEmpty
         ? presets
         : quickWidths
-            .map((size) => PenPreset(size: size, smoothing: .45))
-            .toList();
+              .map((size) => PenPreset(size: size, smoothing: .45))
+              .toList();
+
+    final primaryCard = _ToolbarCard(
+      axis: axis,
+      prominent: true,
+      child: _toolbarFlex(axis, [
+        _ToolButton(
+          icon: zoomMode ? Icons.pan_tool : Icons.select_all,
+          label: 'Pan & zoom',
+          selected: zoomMode,
+          onTap: onToggleZoomMode,
+        ),
+        _Divider(axis: axis, extent: 28),
+        _ToolButton(
+          icon: Icons.edit_outlined,
+          label: 'Pen',
+          selected: _isPenTool && !zoomMode,
+          onTap: onPenTap,
+        ),
+        _ToolButton(
+          icon: Icons.border_color_outlined,
+          label: 'Highlighter',
+          selected: tool == InkTool.highlighter && !zoomMode,
+          onTap: () => onTool(InkTool.highlighter),
+        ),
+        _ToolButton(
+          icon: Icons.auto_fix_normal_outlined,
+          label: 'Eraser',
+          selected: tool == InkTool.eraser && !zoomMode,
+          onTap: () => onTool(InkTool.eraser),
+        ),
+        _ToolButton(
+          icon: Icons.text_fields_rounded,
+          label: 'Text',
+          selected: tool == InkTool.text && !zoomMode,
+          onTap: () => onTool(InkTool.text),
+        ),
+        _ToolButton(
+          icon: Icons.image_outlined,
+          label: 'Add image',
+          selected: tool == InkTool.image && !zoomMode,
+          onTap: onAddImage,
+        ),
+        _ToolButton(
+          icon: Icons.gesture_rounded,
+          label: 'Lasso',
+          selected: tool == InkTool.lasso && !zoomMode,
+          onTap: () => onTool(InkTool.lasso),
+        ),
+        _Divider(axis: axis, extent: 28),
+        _ToolbarDragHandle(
+          key: dragCallbacks.enabled
+              ? const ValueKey('primary-toolbar-drag-handle')
+              : null,
+          axis: axis,
+          callbacks: dragCallbacks,
+          label: 'Move Primary Toolbar',
+        ),
+      ]),
+    );
+    final optionsCard = _ToolbarCard(
+      axis: axis,
+      child: _toolbarFlex(axis, [
+        ..._buildContextControls(context, effectivePresets, axis),
+        _Divider(axis: axis),
+        _ToolbarDragHandle(
+          key: dragCallbacks.enabled
+              ? const ValueKey('options-toolbar-drag-handle')
+              : null,
+          axis: axis,
+          callbacks: dragCallbacks,
+          label: 'Move Tool Options Bar',
+        ),
+      ]),
+    );
+    final cards = switch (section) {
+      FloatingToolbarSection.primary => <Widget>[primaryCard],
+      FloatingToolbarSection.options => <Widget>[optionsCard],
+      FloatingToolbarSection.both => <Widget>[
+        primaryCard,
+        const SizedBox.square(dimension: 5),
+        optionsCard,
+      ],
+    };
+    final depthAxis = axis == Axis.horizontal ? Axis.vertical : Axis.horizontal;
 
     return Container(
-      constraints: const BoxConstraints(maxWidth: 980),
-      margin: const EdgeInsets.fromLTRB(8, 1, 8, 5),
+      constraints: axis == Axis.horizontal
+          ? const BoxConstraints(maxWidth: 980)
+          : const BoxConstraints(maxHeight: 980),
+      margin: axis == Axis.horizontal
+          ? const EdgeInsets.fromLTRB(8, 1, 8, 5)
+          : const EdgeInsets.fromLTRB(1, 8, 5, 8),
       child: IconButtonTheme(
         data: IconButtonThemeData(
           style: IconButton.styleFrom(
@@ -124,61 +226,11 @@ class FloatingEditorToolbar extends StatelessWidget {
         child: DefaultTextStyle.merge(
           style: const TextStyle(fontSize: 12),
           child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Column(
+            scrollDirection: axis,
+            child: Flex(
+              direction: depthAxis,
               mainAxisSize: MainAxisSize.min,
-              children: [
-            _ToolbarCard(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _ToolButton(
-                    icon: zoomMode ? Icons.pan_tool : Icons.select_all,
-                    label: 'Pan & zoom',
-                    selected: zoomMode,
-                    onTap: onToggleZoomMode,
-                  ),
-                  const _Divider(),
-                  _ToolButton(
-                    icon: Icons.edit_outlined,
-                    label: 'Pen',
-                    selected: _isPen && !zoomMode,
-                    onTap: onPenTap,
-                  ),
-                  _ToolButton(
-                    icon: Icons.auto_fix_normal_outlined,
-                    label: 'Eraser',
-                    selected: tool == InkTool.eraser && !zoomMode,
-                    onTap: () => onTool(InkTool.eraser),
-                  ),
-                  _ToolButton(
-                    icon: Icons.text_fields_rounded,
-                    label: 'Text',
-                    selected: tool == InkTool.text && !zoomMode,
-                    onTap: () => onTool(InkTool.text),
-                  ),
-                  _ToolButton(
-                    icon: Icons.image_outlined,
-                    label: 'Add image',
-                    selected: tool == InkTool.image && !zoomMode,
-                    onTap: onAddImage,
-                  ),
-                  _ToolButton(
-                    icon: Icons.gesture_rounded,
-                    label: 'Lasso',
-                    selected: tool == InkTool.lasso && !zoomMode,
-                    onTap: () => onTool(InkTool.lasso),
-                  ),
-                ],
-              ),
-            ),
-                if (!zoomMode) ...[
-                  const SizedBox(height: 3),
-                  _ToolbarCard(
-                    child: _buildContextControls(context, effectivePresets),
-                  ),
-                ],
-              ],
+              children: cards,
             ),
           ),
         ),
@@ -186,249 +238,286 @@ class FloatingEditorToolbar extends StatelessWidget {
     );
   }
 
-  Widget _buildContextControls(
+  List<Widget> _buildContextControls(
     BuildContext context,
     List<PenPreset> effectivePresets,
+    Axis axis,
   ) {
     if (zoomMode) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _ActionButton(icon: Icons.remove, onTap: onZoomOut),
-          _ActionButton(icon: Icons.center_focus_strong, onTap: onResetZoom),
-          _ActionButton(icon: Icons.add, onTap: onZoomIn),
-        ],
-      );
+      return <Widget>[
+        _ActionButton(icon: Icons.remove, onTap: onZoomOut),
+        _ActionButton(icon: Icons.center_focus_strong, onTap: onResetZoom),
+        _ActionButton(icon: Icons.add, onTap: onZoomIn),
+      ];
     }
 
     if (tool == InkTool.eraser) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          PopupMenuButton<EraserMode>(
-            tooltip: 'Eraser mode',
-            onSelected: onEraserModeChanged,
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: EraserMode.precision,
-                child: ListTile(
-                  dense: true,
-                  leading: Icon(Icons.blur_circular_outlined),
-                  title: Text('Precision Eraser'),
-                  subtitle: Text('Erase part of a stroke'),
-                ),
+      return <Widget>[
+        PopupMenuButton<EraserMode>(
+          tooltip: 'Eraser mode',
+          onSelected: onEraserModeChanged,
+          itemBuilder: (_) => const [
+            PopupMenuItem(
+              value: EraserMode.precision,
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.blur_circular_outlined),
+                title: Text('Precision Eraser'),
+                subtitle: Text('Erase part of a stroke'),
               ),
-              PopupMenuItem(
-                value: EraserMode.stroke,
-                child: ListTile(
-                  dense: true,
-                  leading: Icon(Icons.gesture_outlined),
-                  title: Text('Stroke Eraser'),
-                  subtitle: Text('Erase the whole stroke'),
-                ),
+            ),
+            PopupMenuItem(
+              value: EraserMode.stroke,
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.gesture_outlined),
+                title: Text('Stroke Eraser'),
+                subtitle: Text('Erase the whole stroke'),
               ),
-            ],
-            child: _DropdownChip(
-              icon: eraserMode == EraserMode.precision
-                  ? Icons.blur_circular_outlined
-                  : Icons.gesture_outlined,
-              label: eraserMode == EraserMode.precision
-                  ? 'Precision'
-                  : 'Whole stroke',
             ),
+          ],
+          child: _DropdownChip(
+            icon: eraserMode == EraserMode.precision
+                ? Icons.blur_circular_outlined
+                : Icons.gesture_outlined,
+            label: eraserMode == EraserMode.precision
+                ? 'Precision'
+                : 'Whole stroke',
+            compact: axis == Axis.vertical,
           ),
-          const SizedBox(width: 7),
-          for (final size in const [16.0, 28.0, 48.0])
-            _EraserSizeButton(
-              size: size,
-              selected: (width - size).abs() < 1,
-              onTap: () => onWidth(size),
-            ),
-          const _Divider(),
-          _OptionChip(
-            icon: Icons.highlight_alt_outlined,
-            label: 'Highlighter only',
-            selected: eraseHighlighterOnly,
-            onTap: () => onEraseHighlighterOnlyChanged(
-              !eraseHighlighterOnly,
-            ),
+        ),
+        _AxisGap(axis: axis, extent: 7),
+        for (final size in const [16.0, 28.0, 48.0])
+          _EraserSizeButton(
+            size: size,
+            selected: (width - size).abs() < 1,
+            onTap: () => onWidth(size),
           ),
-          const SizedBox(width: 5),
-          _OptionChip(
-            icon: Icons.keyboard_return_rounded,
-            label: 'Auto return',
-            selected: eraserAutoDeselect,
-            onTap: () => onEraserAutoDeselectChanged(
-              !eraserAutoDeselect,
-            ),
-          ),
-        ],
-      );
+        _Divider(axis: axis),
+        _OptionChip(
+          icon: Icons.highlight_alt_outlined,
+          label: 'Highlighter only',
+          selected: eraseHighlighterOnly,
+          compact: axis == Axis.vertical,
+          onTap: () => onEraseHighlighterOnlyChanged(!eraseHighlighterOnly),
+        ),
+        _AxisGap(axis: axis, extent: 5),
+        _OptionChip(
+          icon: Icons.keyboard_return_rounded,
+          label: 'Auto return',
+          selected: eraserAutoDeselect,
+          compact: axis == Axis.vertical,
+          onTap: () => onEraserAutoDeselectChanged(!eraserAutoDeselect),
+        ),
+      ];
     }
 
     if (tool == InkTool.text) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _ColorDot(color: color, selected: true, onTap: onOpenColorPalette),
-          const SizedBox(width: 6),
-          PopupMenuButton<double>(
-            onSelected: onTextSizeChanged,
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 16, child: Text('16')),
-              PopupMenuItem(value: 20, child: Text('20')),
-              PopupMenuItem(value: 24, child: Text('24')),
-              PopupMenuItem(value: 32, child: Text('32')),
-              PopupMenuItem(value: 40, child: Text('40')),
-            ],
-            child: _DropdownChip(label: textSize.round().toString()),
+      return <Widget>[
+        _ColorDot(color: color, selected: true, onTap: onOpenColorPalette),
+        _AxisGap(axis: axis, extent: 6),
+        PopupMenuButton<double>(
+          onSelected: onTextSizeChanged,
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 16, child: Text('16')),
+            PopupMenuItem(value: 20, child: Text('20')),
+            PopupMenuItem(value: 24, child: Text('24')),
+            PopupMenuItem(value: 32, child: Text('32')),
+            PopupMenuItem(value: 40, child: Text('40')),
+          ],
+          child: _DropdownChip(
+            label: textSize.round().toString(),
+            compact: axis == Axis.vertical,
           ),
-          const SizedBox(width: 6),
-          const _DropdownChip(label: 'Modern'),
-          _ToggleButton(
-            label: 'B',
-            selected: textBold,
-            onTap: () => onTextBoldChanged(!textBold),
+        ),
+        _AxisGap(axis: axis, extent: 6),
+        _DropdownChip(
+          icon: Icons.font_download_outlined,
+          label: 'Modern',
+          compact: axis == Axis.vertical,
+        ),
+        _ToggleButton(
+          label: 'B',
+          selected: textBold,
+          onTap: () => onTextBoldChanged(!textBold),
+        ),
+        _ToggleButton(
+          label: 'I',
+          italic: true,
+          selected: textItalic,
+          onTap: () => onTextItalicChanged(!textItalic),
+        ),
+        IconButton(
+          tooltip: 'Alignment',
+          onPressed: () {
+            final next = switch (textAlign) {
+              TextAlign.left => TextAlign.center,
+              TextAlign.center => TextAlign.right,
+              _ => TextAlign.left,
+            };
+            onTextAlignChanged(next);
+          },
+          icon: Icon(
+            textAlign == TextAlign.center
+                ? Icons.format_align_center
+                : textAlign == TextAlign.right
+                ? Icons.format_align_right
+                : Icons.format_align_left,
           ),
-          _ToggleButton(
-            label: 'I',
-            italic: true,
-            selected: textItalic,
-            onTap: () => onTextItalicChanged(!textItalic),
-          ),
+        ),
+        IconButton(
+          tooltip: 'Line spacing',
+          onPressed: () =>
+              onLineHeightChanged(lineHeight >= 1.8 ? 1.0 : lineHeight + .2),
+          icon: const Icon(Icons.format_line_spacing),
+        ),
+        _Divider(axis: axis),
+        _DropdownChip(
+          icon: Icons.push_pin_outlined,
+          label: 'Pin Text Tool',
+          compact: axis == Axis.vertical,
+        ),
+        if (canPaste && onPaste != null) ...[
+          _Divider(axis: axis),
           IconButton(
-            tooltip: 'Alignment',
-            onPressed: () {
-              final next = switch (textAlign) {
-                TextAlign.left => TextAlign.center,
-                TextAlign.center => TextAlign.right,
-                _ => TextAlign.left,
-              };
-              onTextAlignChanged(next);
-            },
-            icon: Icon(
-              textAlign == TextAlign.center
-                  ? Icons.format_align_center
-                  : textAlign == TextAlign.right
-                      ? Icons.format_align_right
-                      : Icons.format_align_left,
-            ),
+            tooltip: 'Paste',
+            onPressed: onPaste,
+            icon: const Icon(Icons.content_paste_rounded),
           ),
-          IconButton(
-            tooltip: 'Line spacing',
-            onPressed: () => onLineHeightChanged(lineHeight >= 1.8 ? 1.0 : lineHeight + .2),
-            icon: const Icon(Icons.format_line_spacing),
-          ),
-          const _Divider(),
-          const _DropdownChip(icon: Icons.push_pin_outlined, label: 'Pin Text Tool'),
         ],
-      );
+      ];
     }
 
-    if (_isPen) {
+    if (_usesDrawingControls) {
       final activePresets = tool == InkTool.highlighter
           ? (highlighterPresets.isNotEmpty
-              ? highlighterPresets
-              : const [
-                  PenPreset(size: 8, smoothing: .45),
-                  PenPreset(size: 14, smoothing: .45),
-                  PenPreset(size: 20, smoothing: .45),
-                ])
+                ? highlighterPresets
+                : const [
+                    PenPreset(size: 8, smoothing: .45),
+                    PenPreset(size: 14, smoothing: .45),
+                    PenPreset(size: 20, smoothing: .45),
+                  ])
           : effectivePresets;
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _PenTypeButton(
-            tool: tool,
-            onTap: onPenSettings,
+      return <Widget>[
+        _PenTypeButton(tool: tool, onTap: onPenSettings),
+        _AxisGap(axis: axis, extent: 6),
+        _Divider(axis: axis),
+        _ToolbarAxisScroller(
+          axis: axis,
+          extent: 106,
+          child: _toolbarFlex(axis, [
+            for (
+              var presetIndex = 0;
+              presetIndex < activePresets.length;
+              presetIndex++
+            )
+              _WidthButton(
+                width: activePresets[presetIndex].size,
+                selected: (width - activePresets[presetIndex].size).abs() < .2,
+                onTap: () => onWidthPresetTap(presetIndex),
+              ),
+          ]),
+        ),
+        _CircleActionButton(
+          icon: Icons.add_rounded,
+          tooltip: 'Add size preset',
+          onTap: onAddWidthPreset,
+        ),
+        _Divider(axis: axis),
+        if (tool != InkTool.highlighter) ...[
+          _AxisGap(axis: axis, extent: 3),
+          _LineButton(
+            dashed: false,
+            selected: !dashed,
+            onTap: () => onDashedChanged(false),
           ),
-          const SizedBox(width: 6),
-          const _Divider(),
-          _ToolbarHorizontalScroller(
-            width: 106,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (var presetIndex = 0;
-                    presetIndex < activePresets.length;
-                    presetIndex++)
-                  _WidthButton(
-                    width: activePresets[presetIndex].size,
-                    selected:
-                        (width - activePresets[presetIndex].size).abs() < .2,
-                    onTap: () => onWidthPresetTap(presetIndex),
-                  ),
-              ],
-            ),
+          _LineButton(
+            dashed: true,
+            selected: dashed,
+            onTap: () => onDashedChanged(true),
           ),
-          _CircleActionButton(
-            icon: Icons.add_rounded,
-            tooltip: 'Add size preset',
-            onTap: onAddWidthPreset,
-          ),
-          const _Divider(),
-          if (tool != InkTool.highlighter) ...[
-            const SizedBox(width: 3),
-            _LineButton(
-              dashed: false,
-              selected: !dashed,
-              onTap: () => onDashedChanged(false),
-            ),
-            _LineButton(
-              dashed: true,
-              selected: dashed,
-              onTap: () => onDashedChanged(true),
-            ),
-          ],
-          const _Divider(),
-          _ToolbarHorizontalScroller(
-            width: 166,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final itemColor in paletteColors)
-                  _ColorDot(
-                    color: itemColor,
-                    selected: itemColor.toARGB32() == color.toARGB32(),
-                    onTap: () => onColor(itemColor),
-                  ),
-              ],
-            ),
-          ),
-          const _Divider(),
-          _CircleActionButton(icon: Icons.add, tooltip: 'More colors', onTap: onOpenColorPalette),
         ],
-      );
+        _Divider(axis: axis),
+        _ToolbarAxisScroller(
+          axis: axis,
+          extent: 166,
+          child: _toolbarFlex(axis, [
+            for (final itemColor in paletteColors)
+              _ColorDot(
+                color: itemColor,
+                selected: itemColor.toARGB32() == color.toARGB32(),
+                onTap: () => onColor(itemColor),
+              ),
+          ]),
+        ),
+        _Divider(axis: axis),
+        _CircleActionButton(
+          icon: Icons.add,
+          tooltip: 'More colors',
+          onTap: onOpenColorPalette,
+        ),
+      ];
     }
 
-    return const Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Padding(
+    return <Widget>[
+      if (axis == Axis.horizontal)
+        const Padding(
           padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
           child: Text('Draw around objects to select them'),
+        )
+      else
+        const Tooltip(
+          message: 'Draw around objects to select them',
+          child: SizedBox(
+            width: 34,
+            height: 34,
+            child: Icon(Icons.gesture_rounded, size: 18),
+          ),
+        ),
+      if (tool == InkTool.lasso && canPaste && onPaste != null) ...[
+        _Divider(axis: axis),
+        IconButton(
+          tooltip: 'Paste',
+          onPressed: onPaste,
+          icon: const Icon(Icons.content_paste_rounded),
         ),
       ],
-    );
+    ];
   }
 }
 
-class _ToolbarHorizontalScroller extends StatefulWidget {
-  const _ToolbarHorizontalScroller({
-    required this.width,
+Widget _toolbarFlex(Axis axis, List<Widget> children) =>
+    Flex(direction: axis, mainAxisSize: MainAxisSize.min, children: children);
+
+class _AxisGap extends StatelessWidget {
+  const _AxisGap({required this.axis, required this.extent});
+
+  final Axis axis;
+  final double extent;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: axis == Axis.horizontal ? extent : 0,
+    height: axis == Axis.vertical ? extent : 0,
+  );
+}
+
+class _ToolbarAxisScroller extends StatefulWidget {
+  const _ToolbarAxisScroller({
+    required this.axis,
+    required this.extent,
     required this.child,
   });
 
-  final double width;
+  final Axis axis;
+  final double extent;
   final Widget child;
 
   @override
-  State<_ToolbarHorizontalScroller> createState() =>
-      _ToolbarHorizontalScrollerState();
+  State<_ToolbarAxisScroller> createState() => _ToolbarAxisScrollerState();
 }
 
-class _ToolbarHorizontalScrollerState
-    extends State<_ToolbarHorizontalScroller> {
+class _ToolbarAxisScrollerState extends State<_ToolbarAxisScroller> {
   final ScrollController _controller = ScrollController();
 
   @override
@@ -440,11 +529,15 @@ class _ToolbarHorizontalScrollerState
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: widget.width,
-      height: _ToolbarCard.contentHeight,
+      width: widget.axis == Axis.horizontal
+          ? widget.extent
+          : _ToolbarCard.contentExtent,
+      height: widget.axis == Axis.vertical
+          ? widget.extent
+          : _ToolbarCard.contentExtent,
       child: SingleChildScrollView(
         controller: _controller,
-        scrollDirection: Axis.horizontal,
+        scrollDirection: widget.axis,
         child: widget.child,
       ),
     );
@@ -452,33 +545,52 @@ class _ToolbarHorizontalScrollerState
 }
 
 class _ToolbarCard extends StatelessWidget {
-  const _ToolbarCard({required this.child});
+  const _ToolbarCard({
+    required this.axis,
+    required this.child,
+    this.prominent = false,
+  });
+
+  final Axis axis;
   final Widget child;
+  final bool prominent;
 
   static const double height = 42;
-  static const double contentHeight = 36;
+  static const double contentExtent = 36;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final cardExtent = prominent ? 52.0 : height;
+    final cardContentExtent = prominent ? 44.0 : contentExtent;
     return Container(
-      height: height,
+      width: axis == Axis.vertical ? cardExtent : null,
+      height: axis == Axis.horizontal ? cardExtent : null,
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: .97),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(prominent ? 18 : 14),
         border: Border.all(color: Theme.of(context).dividerColor),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: .11),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            blurRadius: prominent ? 15 : 12,
+            offset: Offset(0, prominent ? 5 : 4),
           ),
         ],
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      padding: axis == Axis.horizontal
+          ? EdgeInsets.symmetric(
+              horizontal: prominent ? 6 : 4,
+              vertical: prominent ? 3 : 2,
+            )
+          : EdgeInsets.symmetric(
+              horizontal: prominent ? 3 : 2,
+              vertical: prominent ? 6 : 4,
+            ),
       child: Center(
         child: SizedBox(
-          height: contentHeight,
+          width: axis == Axis.vertical ? cardContentExtent : null,
+          height: axis == Axis.horizontal ? cardContentExtent : null,
           child: child,
         ),
       ),
@@ -487,14 +599,59 @@ class _ToolbarCard extends StatelessWidget {
 }
 
 class _Divider extends StatelessWidget {
-  const _Divider();
+  const _Divider({required this.axis, this.extent = 21});
+
+  final Axis axis;
+  final double extent;
+
   @override
   Widget build(BuildContext context) => Container(
-        width: 1,
-        height: 21,
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        color: Theme.of(context).dividerColor,
-      );
+    width: axis == Axis.horizontal ? 1 : extent,
+    height: axis == Axis.vertical ? 1 : extent,
+    margin: axis == Axis.horizontal
+        ? const EdgeInsets.symmetric(horizontal: 4)
+        : const EdgeInsets.symmetric(vertical: 4),
+    color: Theme.of(context).dividerColor,
+  );
+}
+
+class _ToolbarDragHandle extends StatelessWidget {
+  const _ToolbarDragHandle({
+    super.key,
+    required this.axis,
+    required this.callbacks,
+    required this.label,
+  });
+
+  final Axis axis;
+  final ToolbarDragCallbacks callbacks;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: '$label — hold and drag',
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPressStart: callbacks.onStart,
+      onLongPressMoveUpdate: callbacks.onUpdate,
+      onLongPressEnd: callbacks.onEnd,
+      onLongPressCancel: callbacks.onCancel,
+      child: SizedBox(
+        width: axis == Axis.horizontal ? 24 : 40,
+        height: axis == Axis.vertical ? 24 : 40,
+        child: Center(
+          child: RotatedBox(
+            quarterTurns: axis == Axis.vertical ? 1 : 0,
+            child: Icon(
+              Icons.drag_indicator_rounded,
+              size: 17,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _ToolButton extends StatelessWidget {
@@ -518,18 +675,14 @@ class _ToolButton extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(13),
         child: Container(
-          width: 33,
-          height: 32,
-          margin: const EdgeInsets.symmetric(horizontal: .5),
+          width: 42,
+          height: 40,
+          margin: const EdgeInsets.symmetric(horizontal: 1),
           decoration: BoxDecoration(
             color: selected ? scheme.primaryContainer : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(13),
           ),
-          child: Icon(
-            icon,
-            size: 17,
-            color: selected ? scheme.primary : null,
-          ),
+          child: Icon(icon, size: 21, color: selected ? scheme.primary : null),
         ),
       ),
     );
@@ -541,7 +694,8 @@ class _ActionButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
   @override
-  Widget build(BuildContext context) => IconButton(onPressed: onTap, icon: Icon(icon));
+  Widget build(BuildContext context) =>
+      IconButton(onPressed: onTap, icon: Icon(icon));
 }
 
 class _CircleActionButton extends StatelessWidget {
@@ -582,18 +736,18 @@ class _PenTypeButton extends StatelessWidget {
   final VoidCallback onTap;
 
   IconData get _icon => switch (tool) {
-        InkTool.fountainPen => Icons.edit_outlined,
-        InkTool.brushPen => Icons.brush_outlined,
-        InkTool.highlighter => Icons.border_color_outlined,
-        _ => Icons.mode_edit_outline_rounded,
-      };
+    InkTool.fountainPen => Icons.edit_outlined,
+    InkTool.brushPen => Icons.brush_outlined,
+    InkTool.highlighter => Icons.border_color_outlined,
+    _ => Icons.mode_edit_outline_rounded,
+  };
 
   String get _label => switch (tool) {
-        InkTool.fountainPen => 'Fountain Pen settings',
-        InkTool.brushPen => 'Brush Pen settings',
-        InkTool.highlighter => 'Highlighter settings',
-        _ => 'Ball Pen settings',
-      };
+    InkTool.fountainPen => 'Fountain Pen settings',
+    InkTool.brushPen => 'Brush Pen settings',
+    InkTool.highlighter => 'Highlighter settings',
+    _ => 'Ball Pen settings',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -618,29 +772,46 @@ class _PenTypeButton extends StatelessWidget {
 }
 
 class _DropdownChip extends StatelessWidget {
-  const _DropdownChip({this.icon, required this.label});
+  const _DropdownChip({this.icon, required this.label, this.compact = false});
   final IconData? icon;
   final String label;
+  final bool compact;
+
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: .55),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: 15),
-              const SizedBox(width: 4),
-            ],
-            Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(width: 4),
-            const Icon(Icons.expand_more, size: 14),
-          ],
-        ),
-      );
+    width: compact ? 34 : null,
+    height: compact ? 30 : null,
+    padding: compact
+        ? EdgeInsets.zero
+        : const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+    decoration: BoxDecoration(
+      color: Theme.of(
+        context,
+      ).colorScheme.surfaceContainerHighest.withValues(alpha: .55),
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (compact)
+          icon == null
+              ? Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                )
+              : Icon(icon, size: 16)
+        else ...[
+          if (icon != null) ...[Icon(icon, size: 15), const SizedBox(width: 4)],
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(width: 4),
+          const Icon(Icons.expand_more, size: 14),
+        ],
+      ],
+    ),
+  );
 }
 
 class _OptionChip extends StatelessWidget {
@@ -649,12 +820,14 @@ class _OptionChip extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    this.compact = false,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -665,8 +838,11 @@ class _OptionChip extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(10),
         child: Container(
+          width: compact ? 34 : null,
           height: 30,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: compact
+              ? EdgeInsets.zero
+              : const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
             color: selected
                 ? scheme.primaryContainer
@@ -684,14 +860,16 @@ class _OptionChip extends StatelessWidget {
                 size: 15,
                 color: selected ? scheme.primary : scheme.onSurfaceVariant,
               ),
-              const SizedBox(width: 4),
-              Text(
-                label,
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: selected ? scheme.primary : null,
+              if (!compact) ...[
+                const SizedBox(width: 4),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: selected ? scheme.primary : null,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -718,9 +896,7 @@ class _WidthButton extends StatelessWidget {
         : width.toStringAsFixed(1);
     final dotSize = (width * 1.8 + 3).clamp(6.0, 24.0).toDouble();
     return Tooltip(
-      message: selected
-          ? '$label pt — tap again to edit'
-          : '$label pt',
+      message: selected ? '$label pt — tap again to edit' : '$label pt',
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(14),
@@ -751,55 +927,67 @@ class _WidthButton extends StatelessWidget {
 }
 
 class _EraserSizeButton extends StatelessWidget {
-  const _EraserSizeButton({required this.size, required this.selected, required this.onTap});
+  const _EraserSizeButton({
+    required this.size,
+    required this.selected,
+    required this.onTap,
+  });
   final double size;
   final bool selected;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: 35,
-          height: 35,
-          margin: const EdgeInsets.symmetric(horizontal: 3),
-          alignment: Alignment.center,
-          child: Container(
-            width: (size * .55).clamp(14.0, 36.0).toDouble(),
-            height: (size * .55).clamp(14.0, 36.0).toDouble(),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.transparent,
-              border: Border.all(
-                color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor,
-                width: selected ? 3 : 2,
-              ),
-            ),
+    onTap: onTap,
+    customBorder: const CircleBorder(),
+    child: Container(
+      width: 35,
+      height: 35,
+      margin: const EdgeInsets.symmetric(horizontal: 3),
+      alignment: Alignment.center,
+      child: Container(
+        width: (size * .55).clamp(14.0, 36.0).toDouble(),
+        height: (size * .55).clamp(14.0, 36.0).toDouble(),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.transparent,
+          border: Border.all(
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).dividerColor,
+            width: selected ? 3 : 2,
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _LineButton extends StatelessWidget {
-  const _LineButton({required this.dashed, required this.selected, required this.onTap});
+  const _LineButton({
+    required this.dashed,
+    required this.selected,
+    required this.onTap,
+  });
   final bool dashed;
   final bool selected;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          width: 35,
-          height: 30,
-          margin: const EdgeInsets.symmetric(horizontal: 1.5),
-          decoration: BoxDecoration(
-            color: selected ? Theme.of(context).colorScheme.surfaceContainerHighest : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: CustomPaint(painter: _LinePainter(dashed: dashed)),
-        ),
-      );
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(14),
+    child: Container(
+      width: 35,
+      height: 30,
+      margin: const EdgeInsets.symmetric(horizontal: 1.5),
+      decoration: BoxDecoration(
+        color: selected
+            ? Theme.of(context).colorScheme.surfaceContainerHighest
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: CustomPaint(painter: _LinePainter(dashed: dashed)),
+    ),
+  );
 }
 
 class _LinePainter extends CustomPainter {
@@ -816,37 +1004,49 @@ class _LinePainter extends CustomPainter {
       canvas.drawLine(Offset(7, y), Offset(size.width - 7, y), p);
     } else {
       for (double x = 7; x < size.width - 7; x += 9) {
-        canvas.drawLine(Offset(x, y), Offset((x + 5).clamp(0.0, size.width - 7).toDouble(), y), p);
+        canvas.drawLine(
+          Offset(x, y),
+          Offset((x + 5).clamp(0.0, size.width - 7).toDouble(), y),
+          p,
+        );
       }
     }
   }
+
   @override
-  bool shouldRepaint(covariant _LinePainter oldDelegate) => oldDelegate.dashed != dashed;
+  bool shouldRepaint(covariant _LinePainter oldDelegate) =>
+      oldDelegate.dashed != dashed;
 }
 
 class _ColorDot extends StatelessWidget {
-  const _ColorDot({required this.color, required this.selected, required this.onTap});
+  const _ColorDot({
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
   final Color color;
   final bool selected;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: 26,
-          height: 21,
-          margin: const EdgeInsets.symmetric(horizontal: 3),
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: selected ? Theme.of(context).colorScheme.onSurface : Colors.transparent,
-              width: 2,
-            ),
-          ),
+    onTap: onTap,
+    customBorder: const CircleBorder(),
+    child: Container(
+      width: 26,
+      height: 21,
+      margin: const EdgeInsets.symmetric(horizontal: 3),
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: selected
+              ? Theme.of(context).colorScheme.onSurface
+              : Colors.transparent,
+          width: 2,
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _ToggleButton extends StatelessWidget {
@@ -862,24 +1062,26 @@ class _ToggleButton extends StatelessWidget {
   final bool italic;
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(12),
+    child: Container(
+      width: 29,
+      height: 29,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: selected
+            ? Theme.of(context).colorScheme.primaryContainer
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: 29,
-          height: 29,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected ? Theme.of(context).colorScheme.primaryContainer : Colors.transparent,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontStyle: italic ? FontStyle.italic : FontStyle.normal,
-              fontSize: 14,
-            ),
-          ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontWeight: FontWeight.bold,
+          fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+          fontSize: 14,
         ),
-      );
+      ),
+    ),
+  );
 }

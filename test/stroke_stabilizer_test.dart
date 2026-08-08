@@ -8,10 +8,7 @@ void main() {
 
   test('zero strength follows raw input exactly', () {
     final stabilizer = StrokeStabilizer()
-      ..start(
-        const InkPoint(.1, .2, .4),
-        timestamp: Duration.zero,
-      );
+      ..start(const InkPoint(.1, .2, .4), timestamp: Duration.zero);
     const raw = InkPoint(.7, .65, .9);
 
     final result = stabilizer.filter(
@@ -28,20 +25,13 @@ void main() {
 
   test('strong stabilization reduces cross-axis hand jitter', () {
     final stabilizer = StrokeStabilizer()
-      ..start(
-        const InkPoint(.1, .5, .5),
-        timestamp: Duration.zero,
-      );
+      ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
     final rawOffsets = <double>[];
     final stabilizedOffsets = <double>[];
 
     for (var index = 1; index <= 40; index++) {
       final offset = index.isEven ? 5.0 : -5.0;
-      final raw = InkPoint(
-        .1 + index * .012,
-        .5 + offset / canvas.height,
-        .5,
-      );
+      final raw = InkPoint(.1 + index * .012, .5 + offset / canvas.height, .5);
       final result = stabilizer.filter(
         raw,
         canvas,
@@ -55,7 +45,8 @@ void main() {
     }
 
     final rawAverage = rawOffsets.reduce((a, b) => a + b) / rawOffsets.length;
-    final stabilizedAverage = stabilizedOffsets.reduce((a, b) => a + b) / stabilizedOffsets.length;
+    final stabilizedAverage =
+        stabilizedOffsets.reduce((a, b) => a + b) / stabilizedOffsets.length;
     expect(stabilizedAverage, lessThan(rawAverage * .5));
   });
 
@@ -95,5 +86,40 @@ void main() {
     expect(tail.last.pressure, liftOff.pressure);
     expect(stabilizer.isActive, isFalse);
     expect(stabilizer.lastRawPoint, isNull);
+  });
+
+  test('finishing a curved stroke continues its incoming tangent', () {
+    final stabilizer = StrokeStabilizer()
+      ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
+    final previous = stabilizer.filter(
+      const InkPoint(.2, .5, .5),
+      canvas,
+      strength: 1,
+      timestamp: const Duration(milliseconds: 8),
+    );
+    final current = stabilizer.filter(
+      const InkPoint(.3, .52, .5),
+      canvas,
+      strength: 1,
+      timestamp: const Duration(milliseconds: 16),
+    );
+    final tail = stabilizer.finish(const InkPoint(.3, .68, .5), canvas);
+
+    final incoming = Offset(
+      (current.x - previous.x) * canvas.width,
+      (current.y - previous.y) * canvas.height,
+    );
+    final outgoing = Offset(
+      (tail.first.x - current.x) * canvas.width,
+      (tail.first.y - current.y) * canvas.height,
+    );
+    final alignment =
+        (incoming.dx * outgoing.dx + incoming.dy * outgoing.dy) /
+        (incoming.distance * outgoing.distance);
+
+    expect(tail, isNotEmpty);
+    expect(alignment, greaterThan(.8));
+    expect(tail.last.x, .3);
+    expect(tail.last.y, .68);
   });
 }
