@@ -1,10 +1,26 @@
 import 'package:flutter/material.dart';
 
-enum InkTool { pen, fountainPen, brushPen, highlighter, eraser, lasso, shape, text, image }
+enum InkTool {
+  pen,
+  fountainPen,
+  brushPen,
+  highlighter,
+  eraser,
+  lasso,
+  shape,
+  text,
+  image,
+}
+
 enum EraserMode { precision, stroke }
+
 enum BackgroundTemplate { blank, ruled, grid, dotted, cornell }
+
 enum CoverStyle { solid, spiral, leather, pattern }
+
 enum ThemePreference { system, light, dark }
+
+enum ToolbarDock { top, left, right, bottom }
 
 class InkPoint {
   const InkPoint(this.x, this.y, this.pressure);
@@ -16,10 +32,10 @@ class InkPoint {
   Map<String, Object> toJson() => {'x': x, 'y': y, 'p': pressure};
 
   factory InkPoint.fromJson(Map<String, dynamic> value) => InkPoint(
-        (value['x'] as num).toDouble(),
-        (value['y'] as num).toDouble(),
-        (value['p'] as num).toDouble(),
-      );
+    (value['x'] as num).toDouble(),
+    (value['y'] as num).toDouble(),
+    (value['p'] as num).toDouble(),
+  );
 }
 
 abstract class InkObject {
@@ -110,33 +126,33 @@ class InkText extends InkObject {
 
   @override
   Map<String, Object> toJson() => {
-        'type': type,
-        'text': text,
-        'x': x,
-        'y': y,
-        'color': color.toARGB32(),
-        'fontSize': fontSize,
-        'width': width,
-        'bold': bold,
-        'italic': italic,
-        'fontFamily': fontFamily,
-        'textAlign': textAlign.name,
-        'lineHeight': lineHeight,
-      };
+    'type': type,
+    'text': text,
+    'x': x,
+    'y': y,
+    'color': color.toARGB32(),
+    'fontSize': fontSize,
+    'width': width,
+    'bold': bold,
+    'italic': italic,
+    'fontFamily': fontFamily,
+    'textAlign': textAlign.name,
+    'lineHeight': lineHeight,
+  };
 
   factory InkText.fromJson(Map<String, dynamic> value) => InkText(
-        text: value['text'] as String,
-        x: (value['x'] as num).toDouble(),
-        y: (value['y'] as num).toDouble(),
-        color: Color(value['color'] as int),
-        fontSize: (value['fontSize'] as num).toDouble(),
-        width: (value['width'] as num?)?.toDouble() ?? .35,
-        bold: value['bold'] as bool? ?? false,
-        italic: value['italic'] as bool? ?? false,
-        fontFamily: value['fontFamily'] as String? ?? 'Modern',
-        textAlign: TextAlign.values.byName(value['textAlign'] as String? ?? 'left'),
-        lineHeight: (value['lineHeight'] as num?)?.toDouble() ?? 1.2,
-      );
+    text: value['text'] as String,
+    x: (value['x'] as num).toDouble(),
+    y: (value['y'] as num).toDouble(),
+    color: Color(value['color'] as int),
+    fontSize: (value['fontSize'] as num).toDouble(),
+    width: (value['width'] as num?)?.toDouble() ?? .35,
+    bold: value['bold'] as bool? ?? false,
+    italic: value['italic'] as bool? ?? false,
+    fontFamily: value['fontFamily'] as String? ?? 'Modern',
+    textAlign: TextAlign.values.byName(value['textAlign'] as String? ?? 'left'),
+    lineHeight: (value['lineHeight'] as num?)?.toDouble() ?? 1.2,
+  );
 }
 
 class InkImage extends InkObject {
@@ -182,21 +198,21 @@ class InkImage extends InkObject {
 
   @override
   Map<String, Object> toJson() => {
-        'type': type,
-        'path': path,
-        'x': x,
-        'y': y,
-        'width': width,
-        'height': height,
-      };
+    'type': type,
+    'path': path,
+    'x': x,
+    'y': y,
+    'width': width,
+    'height': height,
+  };
 
   factory InkImage.fromJson(Map<String, dynamic> value) => InkImage(
-        path: value['path'] as String,
-        x: (value['x'] as num).toDouble(),
-        y: (value['y'] as num).toDouble(),
-        width: (value['width'] as num).toDouble(),
-        height: (value['height'] as num).toDouble(),
-      );
+    path: value['path'] as String,
+    x: (value['x'] as num).toDouble(),
+    y: (value['y'] as num).toDouble(),
+    width: (value['width'] as num).toDouble(),
+    height: (value['height'] as num).toDouble(),
+  );
 }
 
 class InkStroke extends InkObject {
@@ -239,37 +255,35 @@ class InkStroke extends InkObject {
       width: width ?? this.width,
       points: points ?? this.points,
       dashed: dashed ?? this.dashed,
-      pressureSensitivity:
-          pressureSensitivity ?? this.pressureSensitivity,
+      pressureSensitivity: pressureSensitivity ?? this.pressureSensitivity,
       isSelected: isSelected ?? this.isSelected,
     );
   }
 
   @override
   Map<String, Object> toJson() => {
-        'type': type,
-        'tool': tool.name,
-        'color': color.toARGB32(),
-        'width': width,
-        'dashed': dashed,
-        'pressureSensitivity': pressureSensitivity,
-        'points': points.map((point) => point.toJson()).toList(),
-      };
+    'type': type,
+    'tool': tool.name,
+    'color': color.toARGB32(),
+    'width': width,
+    'dashed': dashed,
+    'pressureSensitivity': pressureSensitivity,
+    'points': points.map((point) => point.toJson()).toList(),
+  };
 
   factory InkStroke.fromJson(Map<String, dynamic> value) => InkStroke(
-        tool: InkTool.values.byName(value['tool'] as String),
-        color: Color(value['color'] as int),
-        width: (value['width'] as num).toDouble(),
-        dashed: value['dashed'] as bool? ?? false,
-        pressureSensitivity:
-            (value['pressureSensitivity'] as num?)?.toDouble() ?? .7,
-        points: (value['points'] as List)
-            .map(
-              (point) =>
-                  InkPoint.fromJson(Map<String, dynamic>.from(point as Map)),
-            )
-            .toList(),
-      );
+    tool: InkTool.values.byName(value['tool'] as String),
+    color: Color(value['color'] as int),
+    width: (value['width'] as num).toDouble(),
+    dashed: value['dashed'] as bool? ?? false,
+    pressureSensitivity:
+        (value['pressureSensitivity'] as num?)?.toDouble() ?? .7,
+    points: (value['points'] as List)
+        .map(
+          (point) => InkPoint.fromJson(Map<String, dynamic>.from(point as Map)),
+        )
+        .toList(),
+  );
 }
 
 class InkFolder {
@@ -279,7 +293,11 @@ class InkFolder {
   final String name;
   final String? parentId;
 
-  InkFolder copyWith({String? name, String? parentId, bool clearParent = false}) {
+  InkFolder copyWith({
+    String? name,
+    String? parentId,
+    bool clearParent = false,
+  }) {
     return InkFolder(
       id: id,
       name: name ?? this.name,
@@ -288,16 +306,16 @@ class InkFolder {
   }
 
   Map<String, Object?> toJson() => {
-        'id': id,
-        'name': name,
-        'parentId': parentId,
-      };
+    'id': id,
+    'name': name,
+    'parentId': parentId,
+  };
 
   factory InkFolder.fromJson(Map<String, dynamic> value) => InkFolder(
-        id: value['id'] as String,
-        name: value['name'] as String,
-        parentId: value['parentId'] as String?,
-      );
+    id: value['id'] as String,
+    name: value['name'] as String,
+    parentId: value['parentId'] as String?,
+  );
 }
 
 class InkDocument {
@@ -318,14 +336,18 @@ class InkDocument {
     this.coverStyle = CoverStyle.solid,
     this.backgroundTemplate = BackgroundTemplate.blank,
     this.requiresNaming = false,
-  })  : pageBackgrounds = pageBackgrounds ??
-            List<String?>.filled(pages.length, null, growable: true),
-        pageAspectRatios = pageAspectRatios ??
-            List<double?>.filled(pages.length, null, growable: true),
-        pagePdfPaths = pagePdfPaths ??
-            List<String?>.filled(pages.length, null, growable: true),
-        pagePdfPageNumbers = pagePdfPageNumbers ??
-            List<int?>.filled(pages.length, null, growable: true);
+  }) : pageBackgrounds =
+           pageBackgrounds ??
+           List<String?>.filled(pages.length, null, growable: true),
+       pageAspectRatios =
+           pageAspectRatios ??
+           List<double?>.filled(pages.length, null, growable: true),
+       pagePdfPaths =
+           pagePdfPaths ??
+           List<String?>.filled(pages.length, null, growable: true),
+       pagePdfPageNumbers =
+           pagePdfPageNumbers ??
+           List<int?>.filled(pages.length, null, growable: true);
 
   final String id;
   final String title;
@@ -383,25 +405,25 @@ class InkDocument {
   }
 
   Map<String, Object?> toJson() => {
-        'id': id,
-        'title': title,
-        'color': colorValue,
-        'createdAt': createdAt.toIso8601String(),
-        'updatedAt': updatedAt.toIso8601String(),
-        'pages': pages
-            .map((page) => page.map((obj) => obj.toJson()).toList())
-            .toList(),
-        'pageBackgrounds': pageBackgrounds,
-        'pageAspectRatios': pageAspectRatios,
-        'pagePdfPaths': pagePdfPaths,
-        'pagePdfPageNumbers': pagePdfPageNumbers,
-        'folderId': folderId,
-        'isFavorite': isFavorite,
-        'iconKey': iconKey,
-        'coverStyle': coverStyle.name,
-        'backgroundTemplate': backgroundTemplate.name,
-        'requiresNaming': requiresNaming,
-      };
+    'id': id,
+    'title': title,
+    'color': colorValue,
+    'createdAt': createdAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
+    'pages': pages
+        .map((page) => page.map((obj) => obj.toJson()).toList())
+        .toList(),
+    'pageBackgrounds': pageBackgrounds,
+    'pageAspectRatios': pageAspectRatios,
+    'pagePdfPaths': pagePdfPaths,
+    'pagePdfPageNumbers': pagePdfPageNumbers,
+    'folderId': folderId,
+    'isFavorite': isFavorite,
+    'iconKey': iconKey,
+    'coverStyle': coverStyle.name,
+    'backgroundTemplate': backgroundTemplate.name,
+    'requiresNaming': requiresNaming,
+  };
 
   factory InkDocument.fromJson(Map<String, dynamic> value) {
     List<List<InkObject>> documentPages;
@@ -435,23 +457,23 @@ class InkDocument {
       pages: documentPages,
       pageBackgrounds: value['pageBackgrounds'] is List
           ? (value['pageBackgrounds'] as List)
-              .map((item) => item as String?)
-              .toList()
+                .map((item) => item as String?)
+                .toList()
           : List<String?>.filled(documentPages.length, null, growable: true),
       pageAspectRatios: value['pageAspectRatios'] is List
           ? (value['pageAspectRatios'] as List)
-              .map((item) => item == null ? null : (item as num).toDouble())
-              .toList()
+                .map((item) => item == null ? null : (item as num).toDouble())
+                .toList()
           : List<double?>.filled(documentPages.length, null, growable: true),
       pagePdfPaths: value['pagePdfPaths'] is List
           ? (value['pagePdfPaths'] as List)
-              .map((item) => item as String?)
-              .toList()
+                .map((item) => item as String?)
+                .toList()
           : List<String?>.filled(documentPages.length, null, growable: true),
       pagePdfPageNumbers: value['pagePdfPageNumbers'] is List
           ? (value['pagePdfPageNumbers'] as List)
-              .map((item) => item == null ? null : (item as num).toInt())
-              .toList()
+                .map((item) => item == null ? null : (item as num).toInt())
+                .toList()
           : List<int?>.filled(documentPages.length, null, growable: true),
       folderId: value['folderId'] as String?,
       isFavorite: value['isFavorite'] as bool? ?? false,
@@ -460,10 +482,12 @@ class InkDocument {
           ? CoverStyle.values.byName(value['coverStyle'] as String)
           : CoverStyle.solid,
       backgroundTemplate: value['backgroundTemplate'] is String
-          ? BackgroundTemplate.values
-              .byName(value['backgroundTemplate'] as String)
+          ? BackgroundTemplate.values.byName(
+              value['backgroundTemplate'] as String,
+            )
           : BackgroundTemplate.blank,
-      requiresNaming: value['requiresNaming'] as bool? ??
+      requiresNaming:
+          value['requiresNaming'] as bool? ??
           RegExp(r'^Document \d+$').hasMatch(title),
     );
   }
@@ -482,12 +506,10 @@ class PenPreset {
   Map<String, Object> toJson() => {'size': size, 'smoothing': smoothing};
 
   factory PenPreset.fromJson(Map<String, dynamic> value) => PenPreset(
-        size: (value['size'] as num).toDouble(),
-        smoothing: (value['smoothing'] as num).toDouble(),
-      );
+    size: (value['size'] as num).toDouble(),
+    smoothing: (value['smoothing'] as num).toDouble(),
+  );
 }
-
-
 
 class WorkspaceSession {
   const WorkspaceSession({
@@ -501,15 +523,14 @@ class WorkspaceSession {
   final String? activeDocumentId;
 
   Map<String, Object?> toJson() => {
-        'editorOpen': editorOpen,
-        'openDocumentIds': openDocumentIds,
-        'activeDocumentId': activeDocumentId,
-      };
+    'editorOpen': editorOpen,
+    'openDocumentIds': openDocumentIds,
+    'activeDocumentId': activeDocumentId,
+  };
 
   factory WorkspaceSession.fromJson(Map<String, dynamic> value) {
-    final ids = (value['openDocumentIds'] as List?)
-            ?.whereType<String>()
-            .toList() ??
+    final ids =
+        (value['openDocumentIds'] as List?)?.whereType<String>().toList() ??
         const <String>[];
     return WorkspaceSession(
       editorOpen: value['editorOpen'] as bool? ?? false,
@@ -544,6 +565,10 @@ class EditorViewState {
     this.textItalic = false,
     this.textAlign = TextAlign.left,
     this.textLineHeight = 1.2,
+    this.primaryToolbarDock = ToolbarDock.top,
+    this.primaryToolbarOrder = 0,
+    this.optionsToolbarDock = ToolbarDock.top,
+    this.optionsToolbarOrder = 1,
     this.pageTransform = const <double>[],
     this.continuousTransform = const <double>[],
   });
@@ -571,6 +596,10 @@ class EditorViewState {
   final bool textItalic;
   final TextAlign textAlign;
   final double textLineHeight;
+  final ToolbarDock primaryToolbarDock;
+  final int primaryToolbarOrder;
+  final ToolbarDock optionsToolbarDock;
+  final int optionsToolbarOrder;
   final List<double> pageTransform;
   final List<double> continuousTransform;
 
@@ -588,86 +617,100 @@ class EditorViewState {
   }
 
   static List<double> _doubleList(Object? value) =>
-      (value as List?)?.whereType<num>().map((item) => item.toDouble()).toList() ??
+      (value as List?)
+          ?.whereType<num>()
+          .map((item) => item.toDouble())
+          .toList() ??
       const <double>[];
 
   Map<String, Object?> toJson() => {
-        'currentPageIndex': currentPageIndex,
-        'tool': tool.name,
-        'colorValue': colorValue,
-        'highlighterColorValue': highlighterColorValue,
-        'width': width,
-        'highlighterWidth': highlighterWidth,
-        'smoothing': smoothing,
-        'pressureSensitivity': pressureSensitivity,
-        'eraserSize': eraserSize,
-        'eraserMode': eraserMode.name,
-        'eraseHighlighterOnly': eraseHighlighterOnly,
-        'eraserAutoDeselect': eraserAutoDeselect,
-        'lastDrawingTool': lastDrawingTool.name,
-        'lastPenTool': lastPenTool.name,
-        'zoomMode': zoomMode,
-        'verticalPageMode': verticalPageMode,
-        'pagesPanelCollapsed': pagesPanelCollapsed,
-        'dashedStroke': dashedStroke,
-        'textSize': textSize,
-        'textBold': textBold,
-        'textItalic': textItalic,
-        'textAlign': textAlign.name,
-        'textLineHeight': textLineHeight,
-        'pageTransform': pageTransform,
-        'continuousTransform': continuousTransform,
-      };
+    'currentPageIndex': currentPageIndex,
+    'tool': tool.name,
+    'colorValue': colorValue,
+    'highlighterColorValue': highlighterColorValue,
+    'width': width,
+    'highlighterWidth': highlighterWidth,
+    'smoothing': smoothing,
+    'pressureSensitivity': pressureSensitivity,
+    'eraserSize': eraserSize,
+    'eraserMode': eraserMode.name,
+    'eraseHighlighterOnly': eraseHighlighterOnly,
+    'eraserAutoDeselect': eraserAutoDeselect,
+    'lastDrawingTool': lastDrawingTool.name,
+    'lastPenTool': lastPenTool.name,
+    'zoomMode': zoomMode,
+    'verticalPageMode': verticalPageMode,
+    'pagesPanelCollapsed': pagesPanelCollapsed,
+    'dashedStroke': dashedStroke,
+    'textSize': textSize,
+    'textBold': textBold,
+    'textItalic': textItalic,
+    'textAlign': textAlign.name,
+    'textLineHeight': textLineHeight,
+    'primaryToolbarDock': primaryToolbarDock.name,
+    'primaryToolbarOrder': primaryToolbarOrder,
+    'optionsToolbarDock': optionsToolbarDock.name,
+    'optionsToolbarOrder': optionsToolbarOrder,
+    'pageTransform': pageTransform,
+    'continuousTransform': continuousTransform,
+  };
 
-  factory EditorViewState.fromJson(Map<String, dynamic> value) =>
-      EditorViewState(
-        currentPageIndex: value['currentPageIndex'] as int? ?? 0,
-        tool: _enumByName(InkTool.values, value['tool'], InkTool.pen),
-        colorValue: value['colorValue'] as int? ?? 0xFF17233C,
-        highlighterColorValue:
-            value['highlighterColorValue'] as int? ?? 0xFFFFFF73,
-        width: (value['width'] as num?)?.toDouble() ?? 2,
-        highlighterWidth:
-            (value['highlighterWidth'] as num?)?.toDouble() ?? 14,
-        smoothing: (value['smoothing'] as num?)?.toDouble() ?? .45,
-        pressureSensitivity:
-            (value['pressureSensitivity'] as num?)?.toDouble() ?? .7,
-        eraserSize: (value['eraserSize'] as num?)?.toDouble() ?? 28,
-        eraserMode: _enumByName(
-          EraserMode.values,
-          value['eraserMode'],
-          EraserMode.precision,
-        ),
-        eraseHighlighterOnly:
-            value['eraseHighlighterOnly'] as bool? ?? false,
-        eraserAutoDeselect: value['eraserAutoDeselect'] as bool? ?? false,
-        lastDrawingTool: _enumByName(
-          InkTool.values,
-          value['lastDrawingTool'],
-          InkTool.pen,
-        ),
-        lastPenTool: _enumByName(
-          InkTool.values,
-          value['lastPenTool'],
-          InkTool.pen,
-        ),
-        zoomMode: value['zoomMode'] as bool? ?? false,
-        verticalPageMode: value['verticalPageMode'] as bool? ?? true,
-        pagesPanelCollapsed: value['pagesPanelCollapsed'] as bool? ?? true,
-        dashedStroke: value['dashedStroke'] as bool? ?? false,
-        textSize: (value['textSize'] as num?)?.toDouble() ?? 24,
-        textBold: value['textBold'] as bool? ?? false,
-        textItalic: value['textItalic'] as bool? ?? false,
-        textAlign: _enumByName(
-          TextAlign.values,
-          value['textAlign'],
-          TextAlign.left,
-        ),
-        textLineHeight:
-            (value['textLineHeight'] as num?)?.toDouble() ?? 1.2,
-        pageTransform: _doubleList(value['pageTransform']),
-        continuousTransform: _doubleList(value['continuousTransform']),
-      );
+  factory EditorViewState.fromJson(
+    Map<String, dynamic> value,
+  ) => EditorViewState(
+    currentPageIndex: value['currentPageIndex'] as int? ?? 0,
+    tool: _enumByName(InkTool.values, value['tool'], InkTool.pen),
+    colorValue: value['colorValue'] as int? ?? 0xFF17233C,
+    highlighterColorValue: value['highlighterColorValue'] as int? ?? 0xFFFFFF73,
+    width: (value['width'] as num?)?.toDouble() ?? 2,
+    highlighterWidth: (value['highlighterWidth'] as num?)?.toDouble() ?? 14,
+    smoothing: (value['smoothing'] as num?)?.toDouble() ?? .45,
+    pressureSensitivity:
+        (value['pressureSensitivity'] as num?)?.toDouble() ?? .7,
+    eraserSize: (value['eraserSize'] as num?)?.toDouble() ?? 28,
+    eraserMode: _enumByName(
+      EraserMode.values,
+      value['eraserMode'],
+      EraserMode.precision,
+    ),
+    eraseHighlighterOnly: value['eraseHighlighterOnly'] as bool? ?? false,
+    eraserAutoDeselect: value['eraserAutoDeselect'] as bool? ?? false,
+    lastDrawingTool: _enumByName(
+      InkTool.values,
+      value['lastDrawingTool'],
+      InkTool.pen,
+    ),
+    lastPenTool: _enumByName(InkTool.values, value['lastPenTool'], InkTool.pen),
+    zoomMode: value['zoomMode'] as bool? ?? false,
+    verticalPageMode: value['verticalPageMode'] as bool? ?? true,
+    pagesPanelCollapsed: value['pagesPanelCollapsed'] as bool? ?? true,
+    dashedStroke: value['dashedStroke'] as bool? ?? false,
+    textSize: (value['textSize'] as num?)?.toDouble() ?? 24,
+    textBold: value['textBold'] as bool? ?? false,
+    textItalic: value['textItalic'] as bool? ?? false,
+    textAlign: _enumByName(
+      TextAlign.values,
+      value['textAlign'],
+      TextAlign.left,
+    ),
+    textLineHeight: (value['textLineHeight'] as num?)?.toDouble() ?? 1.2,
+    primaryToolbarDock: _enumByName(
+      ToolbarDock.values,
+      value['primaryToolbarDock'],
+      ToolbarDock.top,
+    ),
+    primaryToolbarOrder: ((value['primaryToolbarOrder'] as num?)?.toInt() ?? 0)
+        .clamp(0, 1),
+    optionsToolbarDock: _enumByName(
+      ToolbarDock.values,
+      value['optionsToolbarDock'],
+      ToolbarDock.top,
+    ),
+    optionsToolbarOrder: ((value['optionsToolbarOrder'] as num?)?.toInt() ?? 1)
+        .clamp(0, 1),
+    pageTransform: _doubleList(value['pageTransform']),
+    continuousTransform: _doubleList(value['continuousTransform']),
+  );
 }
 
 class AppSettings {
@@ -702,12 +745,12 @@ class AppSettings {
   }
 
   Map<String, Object> toJson() => {
-        'themePreference': themePreference.name,
-        'defaultSmoothing': defaultSmoothing,
-        'defaultWidth': defaultWidth,
-        'sortBy': sortBy,
-        'allowFinger': allowFinger,
-      };
+    'themePreference': themePreference.name,
+    'defaultSmoothing': defaultSmoothing,
+    'defaultWidth': defaultWidth,
+    'sortBy': sortBy,
+    'allowFinger': allowFinger,
+  };
 
   factory AppSettings.fromJson(Map<String, dynamic> value) {
     final savedTheme = value['themePreference'] as String?;
@@ -717,8 +760,7 @@ class AppSettings {
       themePreference: savedTheme == null
           ? (legacyDarkMode ? ThemePreference.dark : ThemePreference.system)
           : ThemePreference.values.byName(savedTheme),
-      defaultSmoothing:
-          (value['defaultSmoothing'] as num?)?.toDouble() ?? 0.45,
+      defaultSmoothing: (value['defaultSmoothing'] as num?)?.toDouble() ?? 0.45,
       defaultWidth: (value['defaultWidth'] as num?)?.toDouble() ?? 2.0,
       sortBy: value['sortBy'] as String? ?? 'date_modified',
       allowFinger: value['allowFinger'] as bool? ?? false,

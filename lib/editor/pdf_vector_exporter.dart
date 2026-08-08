@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:pdf_document/pdf_document.dart' as pdf;
 
 import '../models.dart';
+import 'stroke_geometry.dart';
 
 /// Converts the app's top-left display coordinates into PDF user space.
 ///
@@ -248,42 +249,24 @@ class PdfVectorExporter {
     InkStroke stroke,
     PdfPageCoordinateMapper mapper,
   ) {
-    final source = <_PdfInkSample>[];
-    final minimumDistanceSquared = math
-        .pow(.01 * mapper.pointsPerLogicalUnit, 2)
-        .toDouble();
+    final source = <StrokeGeometrySample>[];
     for (final point in stroke.points) {
       if (!point.x.isFinite || !point.y.isFinite || !point.pressure.isFinite) {
         continue;
       }
       final mapped = mapper.fromNormalized(point.x, point.y);
-      final sample = _PdfInkSample(mapped.$1, mapped.$2, point.pressure);
-      if (source.isEmpty ||
-          sample.distanceSquaredTo(source.last) >= minimumDistanceSquared) {
-        source.add(sample);
-      }
+      source.add(
+        StrokeGeometrySample(Offset(mapped.$1, mapped.$2), point.pressure),
+      );
     }
-    if (source.length < 3) return source;
-
-    var filtered = source;
-    for (var pass = 0; pass < 2; pass++) {
-      final next = <_PdfInkSample>[filtered.first];
-      for (var index = 1; index < filtered.length - 1; index++) {
-        final previous = filtered[index - 1];
-        final current = filtered[index];
-        final following = filtered[index + 1];
-        next.add(
-          _PdfInkSample(
-            (previous.x + current.x * 4 + following.x) / 6,
-            (previous.y + current.y * 4 + following.y) / 6,
-            (previous.pressure + current.pressure * 4 + following.pressure) / 6,
-          ),
-        );
-      }
-      next.add(filtered.last);
-      filtered = next;
-    }
-    return filtered;
+    final filtered = prepareStrokeSamples(
+      source,
+      sampleSpacing: 3 * mapper.pointsPerLogicalUnit,
+    );
+    return <_PdfInkSample>[
+      for (final sample in filtered)
+        _PdfInkSample(sample.offset.dx, sample.offset.dy, sample.pressure),
+    ];
   }
 
   static double _averagePressure(List<_PdfInkSample> samples) =>
@@ -477,12 +460,6 @@ class _PdfInkSample {
   final double y;
   final double pressure;
   final double width;
-
-  double distanceSquaredTo(_PdfInkSample other) {
-    final dx = x - other.x;
-    final dy = y - other.y;
-    return dx * dx + dy * dy;
-  }
 
   _PdfInkSample withWidth(double value) => _PdfInkSample(x, y, pressure, value);
 

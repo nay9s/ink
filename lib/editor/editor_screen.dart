@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 // pdfrx and pdfx both export PdfDocument/PdfPage classes; pdfrx is only
 // used for the small pure-PDF-notebook surface below, so keep it prefixed
@@ -22,14 +23,17 @@ import '../pdf_note_backing.dart';
 import '../store.dart';
 import 'adaptive_pdf_page.dart';
 import 'eraser_geometry.dart';
+import 'image_source_sheet.dart';
 import 'ink_painter.dart';
 import 'native_pdf_document_view.dart';
 import 'native_pdf_ink_importer.dart';
 import 'native_pdf_page_display.dart';
 import 'page_strip.dart';
 import 'pdf_vector_exporter.dart';
+import 'selection_toolbar_layout.dart';
 import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
+import 'toolbar_docking.dart';
 
 enum _ExportChoice { pdfOrImage, noten }
 
@@ -172,6 +176,10 @@ class _EditorScreenState extends State<EditorScreen>
   bool _textItalic = false;
   TextAlign _textAlign = TextAlign.left;
   double _textLineHeight = 1.2;
+  ToolbarDock _primaryToolbarDock = ToolbarDock.top;
+  int _primaryToolbarOrder = 0;
+  ToolbarDock _optionsToolbarDock = ToolbarDock.top;
+  int _optionsToolbarOrder = 1;
   bool _straightLinePreview = false;
   final List<InkPoint> _lassoPath = [];
   final List<InkPoint> _selectionLassoPath = [];
@@ -291,6 +299,7 @@ class _EditorScreenState extends State<EditorScreen>
   Offset? _pendingTouchTapDownPosition;
   bool _pendingTouchTapMoved = false;
 
+  final GlobalKey _editorViewportKey = GlobalKey();
   final GlobalKey _canvasKey = GlobalKey();
   final TransformationController _transformationController =
       TransformationController();
@@ -415,6 +424,16 @@ class _EditorScreenState extends State<EditorScreen>
         _highlighterColorPresets = savedHighlighterColors;
       }
       if (viewState != null) {
+        final toolbarDocking = normalizeToolbarDocking(
+          primary: ToolbarPlacement(
+            dock: viewState.primaryToolbarDock,
+            order: viewState.primaryToolbarOrder,
+          ),
+          options: ToolbarPlacement(
+            dock: viewState.optionsToolbarDock,
+            order: viewState.optionsToolbarOrder,
+          ),
+        );
         _currentPageIndex = viewState.currentPageIndex
             .clamp(0, _pages.length - 1)
             .toInt();
@@ -438,6 +457,10 @@ class _EditorScreenState extends State<EditorScreen>
         _textItalic = viewState.textItalic;
         _textAlign = viewState.textAlign;
         _textLineHeight = viewState.textLineHeight;
+        _primaryToolbarDock = toolbarDocking.primary.dock;
+        _primaryToolbarOrder = toolbarDocking.primary.order;
+        _optionsToolbarDock = toolbarDocking.options.dock;
+        _optionsToolbarOrder = toolbarDocking.options.order;
       }
     });
 
@@ -511,6 +534,10 @@ class _EditorScreenState extends State<EditorScreen>
     textItalic: _textItalic,
     textAlign: _textAlign,
     textLineHeight: _textLineHeight,
+    primaryToolbarDock: _primaryToolbarDock,
+    primaryToolbarOrder: _primaryToolbarOrder,
+    optionsToolbarDock: _optionsToolbarDock,
+    optionsToolbarOrder: _optionsToolbarOrder,
     pageTransform: _transformationController.value.storage.toList(),
     continuousTransform: _continuousTransformationController.value.storage
         .toList(),
@@ -1108,11 +1135,6 @@ class _EditorScreenState extends State<EditorScreen>
   bool _isDrawingTool(InkTool tool) => _isPenFamilyTool(tool);
 
   void _selectOrOpenPenSettings() {
-    if (_tool == InkTool.highlighter && !_zoomMode) {
-      unawaited(_showPenSettings());
-      return;
-    }
-
     if (_isPenTool(_tool) && !_zoomMode) {
       setState(() {
         // Pressing the active pen again enters read mode.
@@ -1126,11 +1148,11 @@ class _EditorScreenState extends State<EditorScreen>
     }
 
     setState(() {
-      final restoredTool = _isPenFamilyTool(_lastDrawingTool)
-          ? _lastDrawingTool
-          : (_isPenTool(_lastPenTool) ? _lastPenTool : InkTool.pen);
+      final restoredTool = _isPenTool(_lastPenTool)
+          ? _lastPenTool
+          : InkTool.pen;
       _tool = restoredTool;
-      if (_isPenTool(restoredTool)) _lastPenTool = restoredTool;
+      _lastPenTool = restoredTool;
       _lastDrawingTool = restoredTool;
       _zoomMode = false;
     });
@@ -1156,7 +1178,9 @@ class _EditorScreenState extends State<EditorScreen>
     await showGeneralDialog<void>(
       context: context,
       barrierDismissible: false,
-      barrierLabel: 'Close pen tools settings',
+      barrierLabel: _tool == InkTool.highlighter
+          ? 'Close highlighter settings'
+          : 'Close pen tools settings',
       barrierColor: Colors.transparent,
       transitionDuration: const Duration(milliseconds: 180),
       pageBuilder: (dialogContext, _, _) {
@@ -1274,15 +1298,19 @@ class _EditorScreenState extends State<EditorScreen>
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            const Text(
-                                              'Pen tools',
+                                            Text(
+                                              isHighlighter
+                                                  ? 'Highlighter settings'
+                                                  : 'Pen tools',
                                               style: TextStyle(
                                                 fontSize: 19,
                                                 fontWeight: FontWeight.w800,
                                               ),
                                             ),
                                             Text(
-                                              penName,
+                                              isHighlighter
+                                                  ? 'Color, size and smoothing'
+                                                  : penName,
                                               style: TextStyle(
                                                 fontSize: 12,
                                                 color: scheme.onSurfaceVariant,
@@ -1300,57 +1328,52 @@ class _EditorScreenState extends State<EditorScreen>
                                     ],
                                   ),
                                   const SizedBox(height: 12),
-                                  Container(
-                                    padding: const EdgeInsets.all(4),
-                                    decoration: BoxDecoration(
-                                      color: scheme.surfaceContainerHighest
-                                          .withValues(alpha: .55),
-                                      borderRadius: BorderRadius.circular(17),
+                                  if (!isHighlighter) ...[
+                                    Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: scheme.surfaceContainerHighest
+                                            .withValues(alpha: .55),
+                                        borderRadius: BorderRadius.circular(17),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: _SettingModeChip(
+                                              icon: Icons
+                                                  .mode_edit_outline_rounded,
+                                              label: 'Ball',
+                                              selected: _tool == InkTool.pen,
+                                              onTap: () =>
+                                                  selectPen(InkTool.pen),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: _SettingModeChip(
+                                              icon: Icons.edit_outlined,
+                                              label: 'Fountain',
+                                              selected:
+                                                  _tool == InkTool.fountainPen,
+                                              onTap: () => selectPen(
+                                                InkTool.fountainPen,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: _SettingModeChip(
+                                              icon: Icons.brush_outlined,
+                                              label: 'Brush',
+                                              selected:
+                                                  _tool == InkTool.brushPen,
+                                              onTap: () =>
+                                                  selectPen(InkTool.brushPen),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                    child: Row(
-                                      children: [
-                                        Expanded(
-                                          child: _SettingModeChip(
-                                            icon:
-                                                Icons.mode_edit_outline_rounded,
-                                            label: 'Ball',
-                                            selected: _tool == InkTool.pen,
-                                            onTap: () => selectPen(InkTool.pen),
-                                          ),
-                                        ),
-                                        Expanded(
-                                          child: _SettingModeChip(
-                                            icon: Icons.edit_outlined,
-                                            label: 'Fountain',
-                                            selected:
-                                                _tool == InkTool.fountainPen,
-                                            onTap: () =>
-                                                selectPen(InkTool.fountainPen),
-                                          ),
-                                        ),
-                                        Expanded(
-                                          child: _SettingModeChip(
-                                            icon: Icons.brush_outlined,
-                                            label: 'Brush',
-                                            selected: _tool == InkTool.brushPen,
-                                            onTap: () =>
-                                                selectPen(InkTool.brushPen),
-                                          ),
-                                        ),
-                                        Expanded(
-                                          child: _SettingModeChip(
-                                            icon: Icons.border_color_outlined,
-                                            label: 'Highlight',
-                                            selected:
-                                                _tool == InkTool.highlighter,
-                                            onTap: () =>
-                                                selectPen(InkTool.highlighter),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 14),
+                                    const SizedBox(height: 14),
+                                  ],
                                   Container(
                                     height: 72,
                                     decoration: BoxDecoration(
@@ -2300,6 +2323,77 @@ class _EditorScreenState extends State<EditorScreen>
           : bounds.expandToInclude(objectBounds);
     }
     return bounds;
+  }
+
+  Rect? _selectionVisualBounds(Size canvasSize) {
+    if (_selectionLassoPath.length < 3 ||
+        canvasSize.width <= 0 ||
+        canvasSize.height <= 0) {
+      return _selectionBounds(canvasSize);
+    }
+
+    var minX = _selectionLassoPath.first.x;
+    var maxX = minX;
+    var minY = _selectionLassoPath.first.y;
+    var maxY = minY;
+    for (final point in _selectionLassoPath.skip(1)) {
+      minX = math.min(minX, point.x);
+      maxX = math.max(maxX, point.x);
+      minY = math.min(minY, point.y);
+      maxY = math.max(maxY, point.y);
+    }
+    return Rect.fromLTRB(
+      minX * canvasSize.width,
+      minY * canvasSize.height,
+      maxX * canvasSize.width,
+      maxY * canvasSize.height,
+    );
+  }
+
+  Rect? _selectionBoundsInViewport() {
+    if (!_hasSelection) return null;
+    final viewportObject = _editorViewportKey.currentContext
+        ?.findRenderObject();
+    if (viewportObject is! RenderBox || !viewportObject.hasSize) return null;
+    final viewportRect = Offset.zero & viewportObject.size;
+
+    if (_usePdfrxViewer) {
+      final pageRect = _pdfrxScreenRectForPage(_currentPageIndex);
+      if (pageRect == null || pageRect.isEmpty) return null;
+      final bounds = _selectionVisualBounds(pageRect.size);
+      final shiftedBounds = bounds?.shift(pageRect.topLeft);
+      return shiftedBounds != null && shiftedBounds.overlaps(viewportRect)
+          ? shiftedBounds
+          : null;
+    }
+
+    final canvasObject = _canvasKey.currentContext?.findRenderObject();
+    if (canvasObject is! RenderBox || !canvasObject.hasSize) return null;
+    final bounds = _selectionVisualBounds(canvasObject.size);
+    if (bounds == null || bounds.isEmpty) return null;
+
+    final viewportPoints =
+        <Offset>[
+          bounds.topLeft,
+          bounds.topRight,
+          bounds.bottomLeft,
+          bounds.bottomRight,
+        ].map(
+          (point) =>
+              viewportObject.globalToLocal(canvasObject.localToGlobal(point)),
+        );
+    var minX = double.infinity;
+    var minY = double.infinity;
+    var maxX = -double.infinity;
+    var maxY = -double.infinity;
+    for (final point in viewportPoints) {
+      minX = math.min(minX, point.dx);
+      maxX = math.max(maxX, point.dx);
+      minY = math.min(minY, point.dy);
+      maxY = math.max(maxY, point.dy);
+    }
+    final viewportBounds = Rect.fromLTRB(minX, minY, maxX, maxY);
+    return viewportBounds.overlaps(viewportRect) ? viewportBounds : null;
   }
 
   bool _selectionContainsLocalOffset(Offset offset, Size canvasSize) {
@@ -3539,22 +3633,36 @@ class _EditorScreenState extends State<EditorScreen>
     var retainedImage = false;
     var inserted = false;
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: false,
-        withData: true,
-      );
-      final picked = result?.files.single;
-      if (picked == null || !mounted) return;
+      final source = await showImageSourceSheet(context);
+      if (source == null || !mounted) return;
 
-      Uint8List? sourceBytes = picked.bytes;
-      final sourcePath = picked.path;
-      if (sourceBytes == null && sourcePath != null) {
-        sourceBytes = await File(sourcePath).readAsBytes();
+      Uint8List? sourceBytes;
+      if (source is GalleryImageSourceResult) {
+        sourceBytes = source.bytes;
+      } else if (source is CameraImageSourceResult) {
+        final photo = await ImagePicker().pickImage(
+          source: ImageSource.camera,
+          requestFullMetadata: false,
+        );
+        if (photo != null) sourceBytes = await photo.readAsBytes();
+      } else if (source is FilesImageSourceResult) {
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.image,
+          allowMultiple: false,
+          withData: true,
+        );
+        final picked = result?.files.single;
+        sourceBytes = picked?.bytes;
+        final sourcePath = picked?.path;
+        if (sourceBytes == null && sourcePath != null) {
+          sourceBytes = await File(sourcePath).readAsBytes();
+        }
       }
-      if (sourceBytes == null || sourceBytes.isEmpty) {
+      if (sourceBytes == null) return;
+      if (sourceBytes.isEmpty) {
         throw StateError('The selected image could not be read.');
       }
+      if (!mounted) return;
 
       sourceBuffer = await ui.ImmutableBuffer.fromUint8List(sourceBytes);
       descriptor = await ui.ImageDescriptor.encoded(sourceBuffer);
@@ -4714,6 +4822,124 @@ class _EditorScreenState extends State<EditorScreen>
     }
   }
 
+  Widget _buildFloatingToolbar({
+    required FloatingToolbarSection section,
+    required Axis axis,
+    required ToolbarDragCallbacks dragCallbacks,
+  }) => FloatingEditorToolbar(
+    section: section,
+    axis: axis,
+    dragCallbacks: dragCallbacks,
+    tool: _tool,
+    color: _tool == InkTool.highlighter ? _highlighterColor : _color,
+    width: _tool == InkTool.eraser
+        ? _eraserSize
+        : _tool == InkTool.highlighter
+        ? _highlighterWidth
+        : _width,
+    canUndo: _canUndoCurrent,
+    canRedo: _canRedoCurrent,
+    zoomMode: _zoomMode,
+    onTool: (tool) {
+      setState(() {
+        final comingFromUtility =
+            _tool == InkTool.eraser ||
+            _tool == InkTool.text ||
+            _tool == InkTool.lasso;
+        final resolvedTool = tool == InkTool.pen && comingFromUtility
+            ? _lastPenTool
+            : tool;
+        _tool = resolvedTool;
+        if (_isDrawingTool(resolvedTool)) _lastDrawingTool = resolvedTool;
+        if (_isPenTool(resolvedTool)) _lastPenTool = resolvedTool;
+        _zoomMode = false;
+      });
+    },
+    onAddImage: () => unawaited(_addImage()),
+    canPaste: _selectionClipboard.isNotEmpty && !_hasSelection,
+    onPaste: _pasteSelection,
+    onColor: (color) => unawaited(_handleQuickColorTap(color)),
+    onOpenColorPalette: _chooseDrawingColor,
+    paletteColors: _tool == InkTool.highlighter
+        ? _highlighterColorPresets
+        : _colorPresets,
+    onWidth: (width) => setState(() {
+      if (_tool == InkTool.eraser) {
+        _eraserSize = width;
+      } else if (_tool == InkTool.highlighter) {
+        _highlighterWidth = width;
+      } else {
+        _width = width;
+      }
+    }),
+    eraserMode: _eraserMode,
+    onEraserModeChanged: (value) => setState(() => _eraserMode = value),
+    eraseHighlighterOnly: _eraseHighlighterOnly,
+    onEraseHighlighterOnlyChanged: (value) =>
+        setState(() => _eraseHighlighterOnly = value),
+    eraserAutoDeselect: _eraserAutoDeselect,
+    onEraserAutoDeselectChanged: (value) =>
+        setState(() => _eraserAutoDeselect = value),
+    onPenTap: _selectOrOpenPenSettings,
+    onPenSettings: _showPenSettings,
+    onUndo: _undoCurrentAction,
+    onRedo: _redoCurrentAction,
+    onToggleZoomMode: () => setState(() => _zoomMode = !_zoomMode),
+    presets: _presets,
+    highlighterPresets: _highlighterPresets,
+    onWidthPresetTap: (index) => unawaited(
+      _handleSizePresetTap(
+        highlighter: _tool == InkTool.highlighter,
+        index: index,
+      ),
+    ),
+    onAddWidthPreset: () =>
+        unawaited(_addSizePreset(highlighter: _tool == InkTool.highlighter)),
+    onZoomIn: () => _zoomEditorBy(1.2),
+    onZoomOut: () => _zoomEditorBy(1 / 1.2),
+    onResetZoom: _resetEditorZoom,
+    dashed: _dashedStroke,
+    onDashedChanged: (value) => setState(() => _dashedStroke = value),
+    textSize: _textSize,
+    onTextSizeChanged: (value) => setState(() => _textSize = value),
+    textBold: _textBold,
+    onTextBoldChanged: (value) => setState(() => _textBold = value),
+    textItalic: _textItalic,
+    onTextItalicChanged: (value) => setState(() => _textItalic = value),
+    textAlign: _textAlign,
+    onTextAlignChanged: (value) => setState(() => _textAlign = value),
+    lineHeight: _textLineHeight,
+    onLineHeightChanged: (value) => setState(() => _textLineHeight = value),
+  );
+
+  void _applyToolbarDocking(ToolbarDockingResult result) {
+    final normalized = normalizeToolbarDocking(
+      primary: result.primary,
+      options: result.options,
+    );
+    setState(() {
+      _primaryToolbarDock = normalized.primary.dock;
+      _primaryToolbarOrder = normalized.primary.order;
+      _optionsToolbarDock = normalized.options.dock;
+      _optionsToolbarOrder = normalized.options.order;
+    });
+  }
+
+  double _toolbarDepthAt(ToolbarDock dock) {
+    var depth = 8.0;
+    var count = 0;
+    if (_primaryToolbarDock == dock) {
+      depth += 58;
+      count++;
+    }
+    if (_optionsToolbarDock == dock) {
+      depth += 48;
+      count++;
+    }
+    if (count > 1) depth += 4;
+    return count == 0 ? 8 : depth;
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
@@ -4751,6 +4977,7 @@ class _EditorScreenState extends State<EditorScreen>
               children: [
                 Expanded(
                   child: Stack(
+                    key: _editorViewportKey,
                     children: [
                       if (_usePdfrxViewer)
                         Positioned.fill(child: _buildPdfrxDocument()),
@@ -5247,135 +5474,84 @@ class _EditorScreenState extends State<EditorScreen>
                           ),
                         ),
 
-                      Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: FloatingEditorToolbar(
-                            tool: _tool,
-                            color: _tool == InkTool.highlighter
-                                ? _highlighterColor
-                                : _color,
-                            width: _tool == InkTool.eraser
-                                ? _eraserSize
-                                : _tool == InkTool.highlighter
-                                ? _highlighterWidth
-                                : _width,
-                            canUndo: _canUndoCurrent,
-                            canRedo: _canRedoCurrent,
-                            zoomMode: _zoomMode,
-                            onTool: (tool) {
-                              setState(() {
-                                final comingFromUtility =
-                                    _tool == InkTool.eraser ||
-                                    _tool == InkTool.text ||
-                                    _tool == InkTool.lasso;
-                                final resolvedTool =
-                                    tool == InkTool.pen && comingFromUtility
-                                    ? _lastPenTool
-                                    : tool;
-                                _tool = resolvedTool;
-                                if (_isDrawingTool(resolvedTool)) {
-                                  _lastDrawingTool = resolvedTool;
-                                }
-                                if (_isPenTool(resolvedTool)) {
-                                  _lastPenTool = resolvedTool;
-                                }
-                                _zoomMode = false;
-                              });
-                            },
-                            onAddImage: () => unawaited(_addImage()),
-                            onColor: (color) =>
-                                unawaited(_handleQuickColorTap(color)),
-                            onOpenColorPalette: _chooseDrawingColor,
-                            paletteColors: _tool == InkTool.highlighter
-                                ? _highlighterColorPresets
-                                : _colorPresets,
-                            onWidth: (width) => setState(() {
-                              if (_tool == InkTool.eraser) {
-                                _eraserSize = width;
-                              } else if (_tool == InkTool.highlighter) {
-                                _highlighterWidth = width;
-                              } else {
-                                _width = width;
-                              }
-                            }),
-                            eraserMode: _eraserMode,
-                            onEraserModeChanged: (value) =>
-                                setState(() => _eraserMode = value),
-                            eraseHighlighterOnly: _eraseHighlighterOnly,
-                            onEraseHighlighterOnlyChanged: (value) =>
-                                setState(() => _eraseHighlighterOnly = value),
-                            eraserAutoDeselect: _eraserAutoDeselect,
-                            onEraserAutoDeselectChanged: (value) =>
-                                setState(() => _eraserAutoDeselect = value),
-                            onPenTap: _selectOrOpenPenSettings,
-                            onPenSettings: _showPenSettings,
-                            onUndo: _undoCurrentAction,
-                            onRedo: _redoCurrentAction,
-                            onToggleZoomMode: () {
-                              setState(() => _zoomMode = !_zoomMode);
-                            },
-                            presets: _presets,
-                            highlighterPresets: _highlighterPresets,
-                            onWidthPresetTap: (index) => unawaited(
-                              _handleSizePresetTap(
-                                highlighter: _tool == InkTool.highlighter,
-                                index: index,
-                              ),
-                            ),
-                            onAddWidthPreset: () => unawaited(
-                              _addSizePreset(
-                                highlighter: _tool == InkTool.highlighter,
-                              ),
-                            ),
-                            onZoomIn: () => _zoomEditorBy(1.2),
-                            onZoomOut: () => _zoomEditorBy(1 / 1.2),
-                            onResetZoom: _resetEditorZoom,
-                            dashed: _dashedStroke,
-                            onDashedChanged: (value) =>
-                                setState(() => _dashedStroke = value),
-                            textSize: _textSize,
-                            onTextSizeChanged: (value) =>
-                                setState(() => _textSize = value),
-                            textBold: _textBold,
-                            onTextBoldChanged: (value) =>
-                                setState(() => _textBold = value),
-                            textItalic: _textItalic,
-                            onTextItalicChanged: (value) =>
-                                setState(() => _textItalic = value),
-                            textAlign: _textAlign,
-                            onTextAlignChanged: (value) =>
-                                setState(() => _textAlign = value),
-                            lineHeight: _textLineHeight,
-                            onLineHeightChanged: (value) =>
-                                setState(() => _textLineHeight = value),
+                      Positioned.fill(
+                        child: DockableEditorToolbars(
+                          primary: ToolbarPlacement(
+                            dock: _primaryToolbarDock,
+                            order: _primaryToolbarOrder,
                           ),
+                          options: ToolbarPlacement(
+                            dock: _optionsToolbarDock,
+                            order: _optionsToolbarOrder,
+                          ),
+                          reservedInsets: EdgeInsets.only(
+                            bottom: wide ? 0 : 54,
+                          ),
+                          primaryBuilder: (context, axis, dragCallbacks) =>
+                              _buildFloatingToolbar(
+                                section: FloatingToolbarSection.primary,
+                                axis: axis,
+                                dragCallbacks: dragCallbacks,
+                              ),
+                          optionsBuilder: (context, axis, dragCallbacks) =>
+                              _buildFloatingToolbar(
+                                section: FloatingToolbarSection.options,
+                                axis: axis,
+                                dragCallbacks: dragCallbacks,
+                              ),
+                          onChanged: _applyToolbarDocking,
                         ),
                       ),
                       if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
-                          (_hasSelection || _selectionClipboard.isNotEmpty))
-                        Positioned(
-                          top: 52,
-                          left: 0,
-                          right: 0,
-                          child: Center(
-                            child: _SelectionActions(
-                              hasSelection: _hasSelection,
-                              canPaste: _selectionClipboard.isNotEmpty,
-                              onCut: _cutSelection,
-                              onCopy: _copySelection,
-                              onPaste: _pasteSelection,
-                              onRemove: _removeSelection,
-                              showEdit:
-                                  _tool == InkTool.text &&
-                                  _currentObjects.any(
-                                    (object) =>
-                                        object is InkText && object.isSelected,
+                          _hasSelection)
+                        Positioned.fill(
+                          child: AnimatedBuilder(
+                            animation: Listenable.merge([
+                              _transformationController,
+                              _continuousTransformationController,
+                              _pdfrxController,
+                            ]),
+                            builder: (context, _) => LayoutBuilder(
+                              builder: (context, _) {
+                                final selectionBounds =
+                                    _selectionBoundsInViewport();
+                                if (selectionBounds == null) {
+                                  return const SizedBox.shrink();
+                                }
+                                return CustomSingleChildLayout(
+                                  delegate: SelectionToolbarLayoutDelegate(
+                                    anchor: selectionBounds,
+                                    leftInset: _toolbarDepthAt(
+                                      ToolbarDock.left,
+                                    ),
+                                    rightInset: _toolbarDepthAt(
+                                      ToolbarDock.right,
+                                    ),
+                                    topInset: _toolbarDepthAt(ToolbarDock.top),
+                                    bottomMargin:
+                                        (wide ? 8 : 58) +
+                                        _toolbarDepthAt(ToolbarDock.bottom),
                                   ),
-                              onEdit: () => unawaited(_editSelectedText()),
-                              onColorPicker: _chooseSelectionColor,
+                                  child: _SelectionActions(
+                                    hasSelection: true,
+                                    canPaste: _selectionClipboard.isNotEmpty,
+                                    onCut: _cutSelection,
+                                    onCopy: _copySelection,
+                                    onPaste: _pasteSelection,
+                                    onRemove: _removeSelection,
+                                    showEdit:
+                                        _tool == InkTool.text &&
+                                        _currentObjects.any(
+                                          (object) =>
+                                              object is InkText &&
+                                              object.isSelected,
+                                        ),
+                                    onEdit: () =>
+                                        unawaited(_editSelectedText()),
+                                    onColorPicker: _chooseSelectionColor,
+                                  ),
+                                );
+                              },
                             ),
                           ),
                         ),
@@ -5732,48 +5908,62 @@ class _SelectionActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Material(
-      elevation: 10,
-      color: scheme.surface,
-      borderRadius: BorderRadius.circular(22),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: 'Change color',
-              onPressed: hasSelection ? onColorPicker : null,
-              icon: const Icon(Icons.colorize_rounded),
-            ),
-            if (showEdit)
+    return IconButtonTheme(
+      data: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          minimumSize: const Size(38, 38),
+          maximumSize: const Size(38, 38),
+          padding: EdgeInsets.zero,
+          iconSize: 20,
+        ),
+      ),
+      child: Material(
+        elevation: 10,
+        color: scheme.surface.withValues(alpha: .98),
+        clipBehavior: Clip.antiAlias,
+        shape: StadiumBorder(
+          side: BorderSide(color: Theme.of(context).dividerColor),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               IconButton(
-                tooltip: 'Edit text',
-                onPressed: hasSelection ? onEdit : null,
-                icon: const Icon(Icons.edit_note_rounded),
+                tooltip: 'Change color',
+                onPressed: hasSelection ? onColorPicker : null,
+                icon: const Icon(Icons.colorize_rounded),
               ),
-            IconButton(
-              tooltip: 'Cut',
-              onPressed: hasSelection ? onCut : null,
-              icon: const Icon(Icons.content_cut_rounded),
-            ),
-            IconButton(
-              tooltip: 'Copy',
-              onPressed: hasSelection ? onCopy : null,
-              icon: const Icon(Icons.copy_rounded),
-            ),
-            IconButton(
-              tooltip: 'Paste',
-              onPressed: canPaste ? onPaste : null,
-              icon: const Icon(Icons.content_paste_rounded),
-            ),
-            IconButton(
-              tooltip: 'Delete',
-              onPressed: hasSelection ? onRemove : null,
-              style: IconButton.styleFrom(foregroundColor: scheme.error),
-              icon: const Icon(Icons.delete_outline_rounded),
-            ),
-          ],
+              if (showEdit)
+                IconButton(
+                  tooltip: 'Edit text',
+                  onPressed: hasSelection ? onEdit : null,
+                  icon: const Icon(Icons.edit_note_rounded),
+                ),
+              IconButton(
+                tooltip: 'Cut',
+                onPressed: hasSelection ? onCut : null,
+                icon: const Icon(Icons.content_cut_rounded),
+              ),
+              IconButton(
+                tooltip: 'Copy',
+                onPressed: hasSelection ? onCopy : null,
+                icon: const Icon(Icons.copy_rounded),
+              ),
+              if (canPaste)
+                IconButton(
+                  tooltip: 'Paste',
+                  onPressed: onPaste,
+                  icon: const Icon(Icons.content_paste_rounded),
+                ),
+              IconButton(
+                tooltip: 'Delete',
+                onPressed: hasSelection ? onRemove : null,
+                style: IconButton.styleFrom(foregroundColor: scheme.error),
+                icon: const Icon(Icons.delete_outline_rounded),
+              ),
+            ],
+          ),
         ),
       ),
     );

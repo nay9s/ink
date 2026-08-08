@@ -3,15 +3,13 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models.dart';
-
-class _RenderPoint {
-  const _RenderPoint(this.offset, this.pressure);
-
-  final Offset offset;
-  final double pressure;
-}
+import 'stroke_geometry.dart';
 
 class InkPainter extends CustomPainter {
+  static const double _lassoStrokeWidth = 1.25;
+  static const double _lassoDashLength = 6.5;
+  static const double _lassoGapLength = 4.5;
+
   InkPainter({
     required this.strokes,
     this.activeStroke,
@@ -89,14 +87,9 @@ class InkPainter extends CustomPainter {
   }
 
   Offset _offsetFor(InkPoint point, Rect rect) => Offset(
-        rect.left + point.x * rect.width,
-        rect.top + point.y * rect.height,
-      );
-
-  Offset _midpoint(Offset a, Offset b) => Offset(
-        (a.dx + b.dx) / 2,
-        (a.dy + b.dy) / 2,
-      );
+    rect.left + point.x * rect.width,
+    rect.top + point.y * rect.height,
+  );
 
   void _drawTemplate(Canvas canvas, Rect rect) {
     if (template == BackgroundTemplate.blank) return;
@@ -166,7 +159,7 @@ class InkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = 2 * _scale;
+      ..strokeWidth = _lassoStrokeWidth * _scale;
     var phase = 0.0;
     var previous = _offsetFor(lassoPath.first, rect);
     for (final point in lassoPath.skip(1)) {
@@ -177,6 +170,8 @@ class InkPainter extends CustomPainter {
         next,
         paint,
         phase: phase,
+        dashLength: _lassoDashLength * _scale,
+        gapLength: _lassoGapLength * _scale,
       );
       previous = next;
     }
@@ -190,7 +185,7 @@ class InkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = 2 * _scale;
+      ..strokeWidth = _lassoStrokeWidth * _scale;
     var phase = 0.0;
     var previous = _offsetFor(selectionPath.first, rect);
     for (final point in selectionPath.skip(1)) {
@@ -201,6 +196,8 @@ class InkPainter extends CustomPainter {
         next,
         border,
         phase: phase,
+        dashLength: _lassoDashLength * _scale,
+        gapLength: _lassoGapLength * _scale,
       );
       previous = next;
     }
@@ -210,6 +207,8 @@ class InkPainter extends CustomPainter {
       _offsetFor(selectionPath.first, rect),
       border,
       phase: phase,
+      dashLength: _lassoDashLength * _scale,
+      gapLength: _lassoGapLength * _scale,
     );
   }
 
@@ -290,24 +289,28 @@ class InkPainter extends CustomPainter {
   }) {
     final rawPressure = pressure.clamp(.03, 1.0).toDouble();
     final sensitivity = stroke.pressureSensitivity.clamp(0.0, 1.0).toDouble();
-    final pressureValue = ((1 - sensitivity) * .72 +
-            sensitivity * math.sqrt(rawPressure))
-        .clamp(.08, 1.0)
-        .toDouble();
+    final pressureValue =
+        ((1 - sensitivity) * .72 + sensitivity * math.sqrt(rawPressure))
+            .clamp(.08, 1.0)
+            .toDouble();
     final baseWidth = stroke.width * _scale;
-    final speedReduction =
-        1 - speed.clamp(0.0, 1.0).toDouble() * .12;
+    final speedReduction = 1 - speed.clamp(0.0, 1.0).toDouble() * .12;
 
     switch (stroke.tool) {
       case InkTool.fountainPen:
         final endTaper = ((1 - progress) / .035).clamp(.48, 1.0).toDouble();
-        return baseWidth * (.48 + pressureValue * 1.12) *
-            speedReduction * endTaper;
+        return baseWidth *
+            (.48 + pressureValue * 1.12) *
+            speedReduction *
+            endTaper;
       case InkTool.brushPen:
         final startTaper = (progress / .055).clamp(.18, 1.0).toDouble();
         final endTaper = ((1 - progress) / .12).clamp(.12, 1.0).toDouble();
-        return baseWidth * (.28 + pressureValue * 1.55) *
-            startTaper * endTaper * speedReduction;
+        return baseWidth *
+            (.28 + pressureValue * 1.55) *
+            startTaper *
+            endTaper *
+            speedReduction;
       case InkTool.highlighter:
         return baseWidth;
       case InkTool.pen:
@@ -318,168 +321,33 @@ class InkPainter extends CustomPainter {
     }
   }
 
-  List<_RenderPoint> _filteredRenderPoints(
+  double _geometryUnit(Rect rect) => math.max(rect.width.abs() / 1000, .0001);
+
+  List<StrokeGeometrySample> _filteredRenderPoints(
     InkStroke stroke,
     Rect rect,
-  ) {
-    final source = <_RenderPoint>[];
-    for (final point in stroke.points) {
-      final candidate = _RenderPoint(_offsetFor(point, rect), point.pressure);
-      if (source.isEmpty ||
-          (candidate.offset - source.last.offset).distanceSquared >= .01) {
-        source.add(candidate);
-      }
-    }
-    if (source.length < 3) return source;
+  ) => prepareStrokeSamples(
+    stroke.points.map(
+      (point) => StrokeGeometrySample(_offsetFor(point, rect), point.pressure),
+    ),
+    // Pen widths are authored against a 1000-unit-wide page. Basing the
+    // spacing on that same coordinate system keeps the curve identical at
+    // every zoom level instead of revealing new corners when enlarged.
+    sampleSpacing: 3 * _geometryUnit(rect),
+  );
 
-    // A short symmetric low-pass filter removes hand-sampling corners without
-    // lagging the tip. Endpoints stay exact so letters still begin and finish
-    // where the Pencil touched the page.
-    var filtered = source;
-    for (var pass = 0; pass < 2; pass++) {
-      final next = <_RenderPoint>[filtered.first];
-      for (var index = 1; index < filtered.length - 1; index++) {
-        final previous = filtered[index - 1];
-        final current = filtered[index];
-        final following = filtered[index + 1];
-        next.add(
-          _RenderPoint(
-            Offset(
-              (previous.offset.dx + current.offset.dx * 4 +
-                      following.offset.dx) /
-                  6,
-              (previous.offset.dy + current.offset.dy * 4 +
-                      following.offset.dy) /
-                  6,
-            ),
-            (previous.pressure + current.pressure * 4 +
-                    following.pressure) /
-                6,
-          ),
-        );
-      }
-      next.add(filtered.last);
-      filtered = next;
-    }
-    return filtered;
-  }
-
-  Path _smoothCenterPath(List<Offset> points) {
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-    if (points.length == 2) {
-      path.lineTo(points.last.dx, points.last.dy);
-      return path;
-    }
-
-    // Midpoint quadratics form one continuously curved centerline. This avoids
-    // the visible straight joins and Catmull-Rom overshoot that appeared when
-    // handwriting was enlarged several times.
-    for (var index = 1; index < points.length - 1; index++) {
-      final current = points[index];
-      final next = points[index + 1];
-      final midpoint = _midpoint(current, next);
-      path.quadraticBezierTo(
-        current.dx,
-        current.dy,
-        midpoint.dx,
-        midpoint.dy,
-      );
-    }
-    final last = points.last;
-    path.quadraticBezierTo(last.dx, last.dy, last.dx, last.dy);
-    return path;
-  }
-
-  List<_RenderPoint> _interpolatedPoints(InkStroke stroke, Rect rect) {
-    final source = _filteredRenderPoints(stroke, rect);
-    if (source.length < 2) return source;
-
-    final output = <_RenderPoint>[];
-    for (var index = 0; index < source.length - 1; index++) {
-      final p0 = source[index == 0 ? 0 : index - 1];
-      final p1 = source[index];
-      final p2 = source[index + 1];
-      final p3 = source[index + 2 < source.length
-          ? index + 2
-          : source.length - 1];
-      final distance = (p2.offset - p1.offset).distance;
-      final steps = (distance / .8).ceil().clamp(2, 40).toInt();
-
-      for (var step = 0; step < steps; step++) {
-        final t = step / steps;
-        final t2 = t * t;
-        final t3 = t2 * t;
-        final x = .5 *
-            ((2 * p1.offset.dx) +
-                (-p0.offset.dx + p2.offset.dx) * t +
-                (2 * p0.offset.dx -
-                        5 * p1.offset.dx +
-                        4 * p2.offset.dx -
-                        p3.offset.dx) *
-                    t2 +
-                (-p0.offset.dx +
-                        3 * p1.offset.dx -
-                        3 * p2.offset.dx +
-                        p3.offset.dx) *
-                    t3);
-        final y = .5 *
-            ((2 * p1.offset.dy) +
-                (-p0.offset.dy + p2.offset.dy) * t +
-                (2 * p0.offset.dy -
-                        5 * p1.offset.dy +
-                        4 * p2.offset.dy -
-                        p3.offset.dy) *
-                    t2 +
-                (-p0.offset.dy +
-                        3 * p1.offset.dy -
-                        3 * p2.offset.dy +
-                        p3.offset.dy) *
-                    t3);
-        output.add(
-          _RenderPoint(
-            Offset(x, y),
-            p1.pressure + (p2.pressure - p1.pressure) * t,
-          ),
-        );
-      }
-    }
-    output.add(source.last);
-    return output;
-  }
-
-  void _appendSmoothBoundary(
-    Path path,
-    List<Offset> points, {
-    required bool moveToFirst,
-  }) {
-    if (points.isEmpty) return;
-    if (moveToFirst) {
-      path.moveTo(points.first.dx, points.first.dy);
-    } else {
-      path.lineTo(points.first.dx, points.first.dy);
-    }
-    if (points.length == 1) return;
-    if (points.length == 2) {
-      path.lineTo(points.last.dx, points.last.dy);
-      return;
-    }
-    for (var index = 1; index < points.length - 1; index++) {
-      final point = points[index];
-      final midpoint = _midpoint(point, points[index + 1]);
-      path.quadraticBezierTo(
-        point.dx,
-        point.dy,
-        midpoint.dx,
-        midpoint.dy,
-      );
-    }
-    path.lineTo(points.last.dx, points.last.dy);
-  }
+  List<StrokeGeometrySample> _interpolatedPoints(
+    List<StrokeGeometrySample> source,
+    Rect rect,
+  ) => sampleSmoothStrokeCurve(
+    source,
+    maximumSegmentLength: .8 * _geometryUnit(rect),
+  );
 
   void _drawVariableStroke(
     Canvas canvas,
     InkStroke stroke,
-    List<_RenderPoint> points,
+    List<StrokeGeometrySample> points,
     Paint paint,
   ) {
     if (points.length < 2) return;
@@ -489,9 +357,9 @@ class InkPainter extends CustomPainter {
 
     for (var index = 0; index < points.length; index++) {
       final previous = points[index == 0 ? 0 : index - 1].offset;
-      final next = points[index + 1 < points.length
-          ? index + 1
-          : points.length - 1].offset;
+      final next =
+          points[index + 1 < points.length ? index + 1 : points.length - 1]
+              .offset;
       var tangent = next - previous;
       if (tangent.distanceSquared < .0001) {
         tangent = const Offset(1, 0);
@@ -513,8 +381,8 @@ class InkPainter extends CustomPainter {
     }
 
     final outline = Path();
-    _appendSmoothBoundary(outline, left, moveToFirst: true);
-    _appendSmoothBoundary(
+    appendSmoothStrokePath(outline, left, moveToFirst: true);
+    appendSmoothStrokePath(
       outline,
       right.reversed.toList(),
       moveToFirst: false,
@@ -568,7 +436,7 @@ class InkPainter extends CustomPainter {
     }
 
     final centerPoints = _filteredRenderPoints(stroke, rect);
-    final renderPoints = _interpolatedPoints(stroke, rect);
+    final renderPoints = _interpolatedPoints(centerPoints, rect);
 
     if (stroke.dashed) {
       var dashPhase = 0.0;
@@ -592,20 +460,20 @@ class InkPainter extends CustomPainter {
       return;
     }
 
-    if (stroke.tool == InkTool.fountainPen ||
-        stroke.tool == InkTool.brushPen) {
+    if (stroke.tool == InkTool.fountainPen || stroke.tool == InkTool.brushPen) {
       _drawVariableStroke(canvas, stroke, renderPoints, paint);
       return;
     }
 
-    final averagePressure = renderPoints
+    final averagePressure =
+        renderPoints
             .map((point) => point.pressure)
             .fold<double>(0, (sum, pressure) => sum + pressure) /
         renderPoints.length;
     paint.strokeWidth = _pressureWidth(stroke, averagePressure, .5);
     canvas.drawPath(
-      _smoothCenterPath(
-        centerPoints.map((point) => point.offset).toList(),
+      createSmoothStrokePath(
+        centerPoints.map((point) => point.offset).toList(growable: false),
       ),
       paint,
     );
@@ -638,21 +506,24 @@ class InkPainter extends CustomPainter {
     Offset end,
     Paint paint, {
     double phase = 0,
+    double? dashLength,
+    double? gapLength,
   }) {
     final delta = end - start;
     final distance = delta.distance;
     if (distance <= 0) return phase;
     final direction = delta / distance;
-    final dashLength = 10.0 * _scale;
-    final gapLength = 7.0 * _scale;
-    final cycle = dashLength + gapLength;
+    final resolvedDashLength = dashLength ?? 10.0 * _scale;
+    final resolvedGapLength = gapLength ?? 7.0 * _scale;
+    final cycle = resolvedDashLength + resolvedGapLength;
     var traveled = 0.0;
     var currentPhase = phase % cycle;
 
     while (traveled < distance) {
-      final inDash = currentPhase < dashLength;
-      final remainingInPart =
-          inDash ? dashLength - currentPhase : cycle - currentPhase;
+      final inDash = currentPhase < resolvedDashLength;
+      final remainingInPart = inDash
+          ? resolvedDashLength - currentPhase
+          : cycle - currentPhase;
       final step = math.min(remainingInPart, distance - traveled);
       if (inDash && step > 0) {
         canvas.drawLine(
@@ -710,9 +581,7 @@ class InkPainter extends CustomPainter {
 
   void _paintImage(Canvas canvas, Rect rect, InkImage imageObject) {
     final image = images[imageObject.path];
-    if (image == null ||
-        imageObject.width <= 0 ||
-        imageObject.height <= 0) {
+    if (image == null || imageObject.width <= 0 || imageObject.height <= 0) {
       return;
     }
     final target = Rect.fromLTWH(
