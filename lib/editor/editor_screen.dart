@@ -167,6 +167,10 @@ class _EditorScreenState extends State<EditorScreen>
   Timer? _saveTimer;
   Timer? _viewSaveTimer;
   Timer? _lineAssistTimer;
+
+  /// Where the pen was when the hold-to-snap countdown last (re)started.
+  /// Samples within [_shapeAssistHoldSlack] of it count as holding still.
+  InkPoint? _shapeAssistAnchor;
   Timer? _pdfQualityTimer;
   bool _viewStateLoaded = false;
   double _pdfRenderScaleBucket = 1;
@@ -1899,6 +1903,7 @@ class _EditorScreenState extends State<EditorScreen>
   void _cancelLineAssist() {
     _lineAssistTimer?.cancel();
     _lineAssistTimer = null;
+    _shapeAssistAnchor = null;
   }
 
   bool get _canStraightenActiveStroke =>
@@ -1909,11 +1914,32 @@ class _EditorScreenState extends State<EditorScreen>
           _activeStroke!.tool == InkTool.highlighter) &&
       _activeStroke!.points.length >= 2;
 
-  void _restartLineAssistTimer() {
+  /// Pencil samples keep arriving at ~120Hz with sub-pixel jitter even when
+  /// the pen is held perfectly still, so restarting the countdown on every
+  /// sample meant it never elapsed and hold-to-snap never fired. Only real
+  /// movement, measured against the anchor rather than the previous sample so
+  /// slow drags still accumulate, restarts it.
+  static const double _shapeAssistHoldSlack = 3;
+
+  void _restartLineAssistTimer([InkPoint? point, Size? size]) {
+    if (!_settings.shapeAssist || !_canStraightenActiveStroke) {
+      _cancelLineAssist();
+      _shapeAssistAnchor = null;
+      return;
+    }
+
+    final anchor = _shapeAssistAnchor;
+    if (point != null && size != null && anchor != null) {
+      final dx = (point.x - anchor.x) * size.width;
+      final dy = (point.y - anchor.y) * size.height;
+      if (math.sqrt(dx * dx + dy * dy) < _shapeAssistHoldSlack) {
+        // Still within the hold: leave any pending countdown running.
+        return;
+      }
+    }
+
     _cancelLineAssist();
-    if (!_settings.shapeAssist || !_canStraightenActiveStroke) return;
-    // Restarted on every sample, so this only elapses while the pen is held
-    // still — that pause is the gesture that asks for a shape.
+    _shapeAssistAnchor = point;
     _lineAssistTimer = Timer(const Duration(milliseconds: 1000), () {
       if (!mounted || !_canStraightenActiveStroke) return;
       setState(_snapActiveStrokeToShape);
@@ -3235,7 +3261,7 @@ class _EditorScreenState extends State<EditorScreen>
           _activeStrokeHasRawTip = false;
         } else {
           _appendSmoothedPoints(event, size);
-          _restartLineAssistTimer();
+          _restartLineAssistTimer(_point(event, size), size);
         }
         _interactionChanged = true;
       }
