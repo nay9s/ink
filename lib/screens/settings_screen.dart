@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../app_metadata.dart';
 import '../main.dart';
 import '../models.dart';
 import '../store.dart';
@@ -66,15 +67,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await InkDocumentStore.deleteAll();
     await InkFolderStore.deleteAll();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('All notes were deleted')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('All notes were deleted')));
   }
 
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator.adaptive()));
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator.adaptive()),
+      );
     }
 
     return Scaffold(
@@ -104,9 +107,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: _ThemePreferenceControl(
                   value: _settings.themePreference,
                   onChanged: (value) {
-                    _updateSettings(
-                      _settings.copyWith(themePreference: value),
-                    );
+                    _updateSettings(_settings.copyWith(themePreference: value));
                   },
                 ),
               ),
@@ -201,14 +202,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  subtitle: const Text('Permanently remove every note and folder'),
+                  subtitle: const Text(
+                    'Permanently remove every note and folder',
+                  ),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: _clearAllNotes,
                 ),
               ),
+              const SizedBox(height: 16),
+              _SettingsSection(
+                title: 'About',
+                subtitle: 'Application information.',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.info_outline_rounded),
+                  title: const Text('Version'),
+                  trailing: const Text(
+                    AppMetadata.versionWithBuild,
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
               const SizedBox(height: 26),
               Text(
-                'Ink Note 1.1.0',
+                AppMetadata.name,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -222,12 +239,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-
 class _ThemePreferenceControl extends StatelessWidget {
-  const _ThemePreferenceControl({
-    required this.value,
-    required this.onChanged,
-  });
+  const _ThemePreferenceControl({required this.value, required this.onChanged});
 
   final ThemePreference value;
   final ValueChanged<ThemePreference> onChanged;

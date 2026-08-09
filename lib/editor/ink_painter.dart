@@ -18,6 +18,7 @@ class InkPainter extends CustomPainter {
     this.selectionPath = const [],
     this.template = BackgroundTemplate.blank,
     this.contentScale = 1.0,
+    this.selectionOverlayScale,
     this.eraserCursor,
     this.eraserDiameter = 0,
     this.eraserBorderWidth = 1.5,
@@ -34,12 +35,19 @@ class InkPainter extends CustomPainter {
   /// canvas or ancestor transform. Never pass an InteractiveViewer zoom here:
   /// its transform already scales paint widths along with the page.
   final double contentScale;
+
+  /// Scale used only for selection outlines and resize handles. Editors whose
+  /// canvas is transformed by an ancestor pass the inverse viewer zoom here,
+  /// keeping this interaction chrome a constant size on screen.
+  final double? selectionOverlayScale;
   final InkPoint? eraserCursor;
   final double eraserDiameter;
   final double eraserBorderWidth;
   final Map<String, ui.Image> images;
 
   double get _scale => contentScale.clamp(.25, 8.0).toDouble();
+  double get _selectionScale =>
+      (selectionOverlayScale ?? contentScale).clamp(.05, 8.0).toDouble();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -160,7 +168,7 @@ class InkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = _lassoStrokeWidth * _scale;
+      ..strokeWidth = _lassoStrokeWidth * _selectionScale;
     var phase = 0.0;
     var previous = _offsetFor(lassoPath.first, rect);
     for (final point in lassoPath.skip(1)) {
@@ -171,8 +179,8 @@ class InkPainter extends CustomPainter {
         next,
         paint,
         phase: phase,
-        dashLength: _lassoDashLength * _scale,
-        gapLength: _lassoGapLength * _scale,
+        dashLength: _lassoDashLength * _selectionScale,
+        gapLength: _lassoGapLength * _selectionScale,
       );
       previous = next;
     }
@@ -186,7 +194,7 @@ class InkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = _lassoStrokeWidth * _scale;
+      ..strokeWidth = _lassoStrokeWidth * _selectionScale;
     var phase = 0.0;
     var previous = _offsetFor(selectionPath.first, rect);
     for (final point in selectionPath.skip(1)) {
@@ -197,8 +205,8 @@ class InkPainter extends CustomPainter {
         next,
         border,
         phase: phase,
-        dashLength: _lassoDashLength * _scale,
-        gapLength: _lassoGapLength * _scale,
+        dashLength: _lassoDashLength * _selectionScale,
+        gapLength: _lassoGapLength * _selectionScale,
       );
       previous = next;
     }
@@ -208,8 +216,8 @@ class InkPainter extends CustomPainter {
       _offsetFor(selectionPath.first, rect),
       border,
       phase: phase,
-      dashLength: _lassoDashLength * _scale,
-      gapLength: _lassoGapLength * _scale,
+      dashLength: _lassoDashLength * _selectionScale,
+      gapLength: _lassoGapLength * _selectionScale,
     );
 
     final normalizedBounds = inkPointBounds(selectionPath);
@@ -261,7 +269,7 @@ class InkPainter extends CustomPainter {
 
     if (!hasSelection || minX == double.infinity) return;
 
-    final padding = 10 * _scale;
+    final padding = selectionOutlinePadding * _selectionScale;
     final selectionRect = Rect.fromLTRB(
       rect.left + minX * rect.width - padding,
       rect.top + minY * rect.height - padding,
@@ -272,7 +280,7 @@ class InkPainter extends CustomPainter {
       ..isAntiAlias = true
       ..color = Colors.blueAccent
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2 * _scale;
+      ..strokeWidth = 2 * _selectionScale;
     canvas.drawRect(selectionRect, paint);
 
     _drawResizeHandles(canvas, selectionRect);
@@ -286,8 +294,8 @@ class InkPainter extends CustomPainter {
       ..isAntiAlias = true
       ..color = Colors.blueAccent
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2 * _scale;
-    final handleRadius = 6 * _scale;
+      ..strokeWidth = 2 * _selectionScale;
+    final handleRadius = selectionHandleRadius * _selectionScale;
     for (final handle in SelectionResizeHandle.values) {
       final point = selectionResizeHandlePosition(selectionRect, handle);
       canvas.drawCircle(point, handleRadius, handlePaint);

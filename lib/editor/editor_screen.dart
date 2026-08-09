@@ -2131,10 +2131,19 @@ class _EditorScreenState extends State<EditorScreen>
       }
     }
 
-    final resizeHandle = isTouch
+    final isSelectionTool =
+        _tool == InkTool.lasso ||
+        _tool == InkTool.text ||
+        _tool == InkTool.image;
+    final canTransformSelection =
+        isTouch ||
+        (isSelectionTool &&
+            (_isStylus(event) || event.kind == PointerDeviceKind.mouse));
+    final resizeHandle = canTransformSelection
         ? _selectionResizeHandleAt(event.localPosition, size)
         : null;
-    final touchedImageIndex = isTouch && resizeHandle == null
+    final canSelectImageDirectly = isTouch || isSelectionTool;
+    final touchedImageIndex = canSelectImageDirectly && resizeHandle == null
         ? _findImageIndexAt(event.localPosition, size)
         : null;
     var startedInsideSelection =
@@ -2239,6 +2248,11 @@ class _EditorScreenState extends State<EditorScreen>
         _interactionChanged = true;
       }
     });
+    if (resizingSelection ||
+        touchedImageIndex != null ||
+        _tool == InkTool.lasso) {
+      _invalidatePdfrxInkOverlay();
+    }
     _restartLineAssistTimer();
     if (_interactionChanged) _scheduleSave();
   }
@@ -2257,8 +2271,11 @@ class _EditorScreenState extends State<EditorScreen>
 
   bool get _hasSelection => _currentObjects.any((item) => item.isSelected);
 
+  double get _selectionCanvasToScreenScale =>
+      _eraserCanvasToScreenScale.clamp(.1, 8).toDouble();
+
   double get _selectionHitScale =>
-      _usePdfrxViewer ? 1 : _eraserCanvasToScreenScale.clamp(.1, 8).toDouble();
+      _usePdfrxViewer ? 1 : _selectionCanvasToScreenScale;
 
   int? _findImageIndexAt(Offset localPosition, Size canvasSize) {
     if (canvasSize.width <= 0 || canvasSize.height <= 0) return null;
@@ -2282,12 +2299,12 @@ class _EditorScreenState extends State<EditorScreen>
     Size canvasSize,
   ) {
     if (!_hasSelection) return null;
-    final bounds = _selectionVisualBounds(canvasSize);
+    final bounds = _selectionResizeBounds(canvasSize);
     if (bounds == null) return null;
     return hitTestSelectionResizeHandle(
       localPosition,
       bounds,
-      hitRadius: 26 / _selectionHitScale,
+      hitRadius: selectionHandleHitRadius / _selectionHitScale,
     );
   }
 
@@ -2335,6 +2352,23 @@ class _EditorScreenState extends State<EditorScreen>
           : bounds.expandToInclude(objectBounds);
     }
     return bounds;
+  }
+
+  /// Bounds used by both the painted corner handles and pointer hit testing.
+  /// For direct object selections the outline has a fixed screen-space inset;
+  /// a freeform lasso keeps its handles on the lasso's exact bounding corners.
+  Rect? _selectionResizeBounds(Size canvasSize) {
+    if (canvasSize.width <= 0 || canvasSize.height <= 0) return null;
+    final normalizedBounds = _selectionTransformBounds(canvasSize);
+    if (normalizedBounds == null) return null;
+    final canvasBounds = Rect.fromLTRB(
+      normalizedBounds.left * canvasSize.width,
+      normalizedBounds.top * canvasSize.height,
+      normalizedBounds.right * canvasSize.width,
+      normalizedBounds.bottom * canvasSize.height,
+    );
+    if (_selectionLassoPath.length >= 3) return canvasBounds;
+    return canvasBounds.inflate(selectionOutlinePadding / _selectionHitScale);
   }
 
   bool _beginSelectionResize(
@@ -2715,6 +2749,116 @@ class _EditorScreenState extends State<EditorScreen>
     _scheduleSave();
   }
 
+  Size? _activeSelectionCanvasSize() {
+    if (_usePdfrxViewer) {
+      return _pdfrxScreenRectForPage(_currentPageIndex)?.size;
+    }
+    final canvasObject = _canvasKey.currentContext?.findRenderObject();
+    return canvasObject is RenderBox && canvasObject.hasSize
+        ? canvasObject.size
+        : null;
+  }
+
+  double _maximumSelectionScaleAroundCenter(Rect bounds) {
+    final anchor = bounds.center;
+    var maximum = 3.0;
+
+    void limit(double extent, double available) {
+      if (extent > 1e-9) maximum = math.min(maximum, available / extent);
+    }
+
+    limit(anchor.dx - bounds.left, anchor.dx);
+    limit(bounds.right - anchor.dx, 1 - anchor.dx);
+    limit(anchor.dy - bounds.top, anchor.dy);
+    limit(bounds.bottom - anchor.dy, 1 - anchor.dy);
+    if (!maximum.isFinite) return 3;
+    return maximum.clamp(1.0, 3.0).toDouble();
+  }
+
+  Future<void> _showSelectionResizeDialog() async {
+    if (!_hasSelection) return;
+    final canvasSize = _activeSelectionCanvasSize();
+    if (canvasSize == null || canvasSize.isEmpty) return;
+    final bounds = _selectionTransformBounds(canvasSize);
+    if (bounds == null ||
+        math.max(bounds.width.abs(), bounds.height.abs()) <= 1e-6) {
+      return;
+    }
+    final maximumScale = _maximumSelectionScaleAroundCenter(bounds);
+    var pendingScale = 1.0;
+    final result = await showDialog<double>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Resize selection'),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${(pendingScale * 100).round()}%',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                Slider(
+                  key: const ValueKey('selection-resize-slider'),
+                  value: pendingScale,
+                  min: .25,
+                  max: maximumScale,
+                  divisions: math.max(1, ((maximumScale - .25) * 20).round()),
+                  label: '${(pendingScale * 100).round()}%',
+                  onChanged: (value) =>
+                      setDialogState(() => pendingScale = value),
+                ),
+                const Text(
+                  'You can also drag any blue corner handle directly.',
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, pendingScale),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || result == null || (result - 1).abs() < .001) return;
+
+    _snapshot();
+    final anchor = bounds.center;
+    setState(() {
+      for (var index = 0; index < _currentObjects.length; index++) {
+        final object = _currentObjects[index];
+        if (!object.isSelected) continue;
+        _currentObjects[index] = scaleSelectionObject(
+          object,
+          anchor: anchor,
+          scale: result,
+        );
+      }
+      if (_selectionLassoPath.isNotEmpty) {
+        for (var index = 0; index < _selectionLassoPath.length; index++) {
+          _selectionLassoPath[index] = scaleSelectionPoint(
+            _selectionLassoPath[index],
+            anchor,
+            result,
+          );
+        }
+      }
+      _selectionMoveMode = true;
+    });
+    _scheduleSave();
+    _invalidatePdfrxInkOverlay();
+  }
+
   void _recolorSelection(Color color) {
     if (!_hasSelection) return;
     _snapshot();
@@ -3064,11 +3208,13 @@ class _EditorScreenState extends State<EditorScreen>
     }
     if (_activePointer != event.pointer) return;
     final point = _point(event, size);
+    var selectionOverlayChanged = false;
 
     setState(() {
       if (_activeSelectionResizeHandle != null) {
         _resizeSelection(point, size);
         _interactionChanged = true;
+        selectionOverlayChanged = true;
       } else if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
           _lastSelectPosition != null) {
         if (_selectionMoveMode && _hasSelection) {
@@ -3077,8 +3223,10 @@ class _EditorScreenState extends State<EditorScreen>
           _moveSelection(dx, dy);
           _interactionChanged = true;
           _lastSelectPosition = Offset(point.x, point.y);
+          selectionOverlayChanged = true;
         } else {
           _lassoPath.add(point);
+          selectionOverlayChanged = true;
         }
       } else if (_temporaryEraser) {
         final previous = _eraserCursor;
@@ -3099,6 +3247,7 @@ class _EditorScreenState extends State<EditorScreen>
         _interactionChanged = true;
       }
     });
+    if (selectionOverlayChanged) _invalidatePdfrxInkOverlay();
     if (_interactionChanged) _scheduleSave();
   }
 
@@ -3169,6 +3318,7 @@ class _EditorScreenState extends State<EditorScreen>
       _straightLinePreview = false;
       _selectionPointerStartedInside = false;
     });
+    if (_tool == InkTool.lasso) _invalidatePdfrxInkOverlay();
     if (_interactionChanged) {
       _scheduleSave();
     } else if (_undo.isNotEmpty) {
@@ -3638,6 +3788,12 @@ class _EditorScreenState extends State<EditorScreen>
     );
   }
 
+  void _invalidatePdfrxInkOverlay() {
+    if (_usePdfrxViewer && _pdfrxController.isReady) {
+      _pdfrxController.invalidate();
+    }
+  }
+
   /// Paints one page's ink through pdfrx's own paint pass
   /// (PdfViewerParams.pagePaintCallbacks) instead of a separately
   /// transformed/synced widget layer — validated on-device via the pdfrx
@@ -3657,6 +3813,9 @@ class _EditorScreenState extends State<EditorScreen>
       lassoPath: isCurrent ? _lassoPath : const <InkPoint>[],
       selectionPath: isCurrent ? _selectionLassoPath : const <InkPoint>[],
       template: widget.document.backgroundTemplate,
+      selectionOverlayScale: selectionOverlayScaleForCanvas(
+        canvasToScreenScale: _selectionCanvasToScreenScale,
+      ),
       eraserCursor: isCurrent && _temporaryEraser ? _eraserCursor : null,
       eraserDiameter: _eraserCanvasDiameter,
       eraserBorderWidth: _eraserGeometry.canvasBorderWidth,
@@ -5365,6 +5524,13 @@ class _EditorScreenState extends State<EditorScreen>
                                                             .backgroundTemplate,
                                                         contentScale:
                                                             contentScale,
+                                                        selectionOverlayScale:
+                                                            selectionOverlayScaleForCanvas(
+                                                              canvasToScreenScale:
+                                                                  _selectionCanvasToScreenScale,
+                                                              contentScale:
+                                                                  contentScale,
+                                                            ),
                                                         eraserCursor:
                                                             isCurrent &&
                                                                 _temporaryEraser
@@ -5724,6 +5890,8 @@ class _EditorScreenState extends State<EditorScreen>
                                     onCopy: _copySelection,
                                     onPaste: _pasteSelection,
                                     onRemove: _removeSelection,
+                                    onResize: () =>
+                                        unawaited(_showSelectionResizeDialog()),
                                     showEdit:
                                         _tool == InkTool.text &&
                                         _currentObjects.any(
@@ -6075,6 +6243,7 @@ class _SelectionActions extends StatelessWidget {
     required this.onCopy,
     required this.onPaste,
     required this.onRemove,
+    required this.onResize,
     required this.showEdit,
     required this.onEdit,
     required this.onColorPicker,
@@ -6086,6 +6255,7 @@ class _SelectionActions extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onPaste;
   final VoidCallback onRemove;
+  final VoidCallback onResize;
   final bool showEdit;
   final VoidCallback onEdit;
   final VoidCallback onColorPicker;
@@ -6126,6 +6296,11 @@ class _SelectionActions extends StatelessWidget {
                   onPressed: hasSelection ? onEdit : null,
                   icon: const Icon(Icons.edit_note_rounded),
                 ),
+              IconButton(
+                tooltip: 'Resize',
+                onPressed: hasSelection ? onResize : null,
+                icon: const Icon(Icons.aspect_ratio_rounded),
+              ),
               IconButton(
                 tooltip: 'Cut',
                 onPressed: hasSelection ? onCut : null,
