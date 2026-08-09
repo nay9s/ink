@@ -149,11 +149,15 @@ Future<InsertImageSourceResult?> showImageSourceSheet(
   final screen = MediaQuery.sizeOf(context);
   final topInset = math.min(112.0, math.max(72.0, screen.height * .13));
   final maximumHeight = math.max(320.0, screen.height - topInset - 24);
+  // Sized to show a 3x3 grid of thumbnails, like an iOS popover: big enough
+  // to browse, small enough that the page stays visible behind it.
+  const width = 360.0;
+  const height = 476.0;
   return showGeneralDialog<InsertImageSourceResult>(
     context: context,
     barrierDismissible: true,
     barrierLabel: 'Close image picker',
-    barrierColor: Colors.black.withValues(alpha: .18),
+    barrierColor: Colors.black.withValues(alpha: .12),
     transitionDuration: const Duration(milliseconds: 180),
     pageBuilder: (context, _, _) => SafeArea(
       child: Align(
@@ -161,8 +165,8 @@ Future<InsertImageSourceResult?> showImageSourceSheet(
         child: Padding(
           padding: EdgeInsets.fromLTRB(16, topInset, 16, 16),
           child: SizedBox(
-            width: math.min(720, math.max(280, screen.width - 32)),
-            height: math.min(650, maximumHeight),
+            width: math.min(width, math.max(280, screen.width - 32)),
+            height: math.min(height, maximumHeight),
             child: ImageSourceSheet(
               library: library ?? PhotoManagerLibraryGateway(),
             ),
@@ -383,67 +387,40 @@ class _ImageSourceSheetState extends State<ImageSourceSheet>
             ),
           ),
         ),
-        Container(
-          margin: const EdgeInsets.only(top: 10),
-          decoration: BoxDecoration(
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          // Material both supplies the surface styling and gives descendant
+          // Text widgets a DefaultTextStyle. showGeneralDialog does not add
+          // one, and without it plain Text renders in the red-on-yellow
+          // "missing style" debug form.
+          child: Material(
             color: scheme.surface,
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: Theme.of(context).dividerColor),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: .16),
-                blurRadius: 28,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: Column(
-            children: [
-              SizedBox(
-                height: 72,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    const Text(
-                      'Images',
-                      style: TextStyle(
-                        fontSize: 21,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    if (_cameraAvailable)
-                      Positioned(
-                        right: 16,
-                        child: IconButton.filledTonal(
-                          key: const ValueKey('image-source-camera'),
-                          tooltip: 'Take photo',
-                          onPressed: () => Navigator.of(
-                            context,
-                          ).pop(const CameraImageSourceResult()),
-                          icon: const Icon(Icons.photo_camera_outlined),
-                        ),
-                      ),
-                  ],
+            elevation: 12,
+            shadowColor: Colors.black.withValues(alpha: .28),
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(22),
+              side: BorderSide(color: Theme.of(context).dividerColor),
+            ),
+            child: Column(
+              children: [
+                _SheetHeader(
+                  onCamera: _cameraAvailable
+                      ? () => Navigator.of(
+                          context,
+                        ).pop(const CameraImageSourceResult())
+                      : null,
                 ),
-              ),
-              Divider(height: 1, color: Theme.of(context).dividerColor),
-              Expanded(child: _buildBody(context)),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
-                child: FilledButton.tonalIcon(
-                  key: const ValueKey('image-source-files'),
-                  onPressed: () =>
-                      Navigator.of(context).pop(const FilesImageSourceResult()),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(210, 48),
-                    shape: const StadiumBorder(),
-                  ),
-                  icon: const Icon(Icons.folder_open_rounded),
-                  label: const Text('More…'),
+                Divider(height: 1, color: Theme.of(context).dividerColor),
+                Expanded(child: _buildBody(context)),
+                Divider(height: 1, color: Theme.of(context).dividerColor),
+                _SheetFooterAction(
+                  onPressed: () => Navigator.of(
+                    context,
+                  ).pop(const FilesImageSourceResult()),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ],
@@ -474,36 +451,121 @@ class _ImageSourceSheetState extends State<ImageSourceSheet>
         if (_error != null)
           _InlinePhotoError(message: _error!, onRetry: _initialize),
         Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final columns = constraints.maxWidth >= 560 ? 4 : 3;
-              return GridView.builder(
-                controller: _scrollController,
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                itemCount: _assets.length + (_loadingMore ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index >= _assets.length) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  final asset = _assets[index];
-                  return _PhotoTile(
-                    key: ValueKey('gallery-${asset.id}'),
-                    asset: asset,
-                    library: widget.library,
-                    loading: _loadingAssetId == asset.id,
-                    onTap: () => unawaited(_selectAsset(asset)),
-                  );
-                },
+          child: GridView.builder(
+            controller: _scrollController,
+            padding: const EdgeInsets.all(14),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+            ),
+            itemCount: _assets.length + (_loadingMore ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (index >= _assets.length) {
+                return const Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+                );
+              }
+              final asset = _assets[index];
+              return _PhotoTile(
+                key: ValueKey('gallery-${asset.id}'),
+                asset: asset,
+                library: widget.library,
+                loading: _loadingAssetId == asset.id,
+                onTap: () => unawaited(_selectAsset(asset)),
               );
             },
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Compact iOS-style header: the title stays optically centred because the
+/// leading spacer matches the trailing action's width, and the row is forced
+/// to full width so the action cannot drift inward over the title.
+class _SheetHeader extends StatelessWidget {
+  const _SheetHeader({required this.onCamera});
+
+  final VoidCallback? onCamera;
+
+  static const double _actionExtent = 48;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: Row(
+        children: [
+          const SizedBox(width: _actionExtent),
+          const Expanded(
+            child: Text(
+              'Images',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -.2,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: _actionExtent,
+            child: onCamera == null
+                ? null
+                : IconButton(
+                    key: const ValueKey('image-source-camera'),
+                    tooltip: 'Take photo',
+                    onPressed: onCamera,
+                    iconSize: 21,
+                    icon: const Icon(Icons.photo_camera_outlined),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Full-width tappable row in place of a floating button, matching how iOS
+/// action sheets present a trailing choice.
+class _SheetFooterAction extends StatelessWidget {
+  const _SheetFooterAction({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      key: const ValueKey('image-source-files'),
+      onTap: onPressed,
+      child: SizedBox(
+        height: 52,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.folder_open_rounded, size: 20, color: scheme.primary),
+            const SizedBox(width: 8),
+            Text(
+              'More…',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: scheme.primary,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -549,7 +611,7 @@ class _PhotoTileState extends State<_PhotoTile> {
     final scheme = Theme.of(context).colorScheme;
     return Material(
       color: scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(20),
+      borderRadius: BorderRadius.circular(12),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: widget.loading ? null : widget.onTap,
