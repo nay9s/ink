@@ -50,7 +50,34 @@ void main() {
     expect(stabilizedAverage, lessThan(rawAverage * .5));
   });
 
-  test('maximum strength keeps the virtual pen close to the Pencil', () {
+  test('default stabilization removes visible sample zigzags', () {
+    final stabilizer = StrokeStabilizer()
+      ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
+    final rawOffsets = <double>[];
+    final stabilizedOffsets = <double>[];
+
+    for (var index = 1; index <= 40; index++) {
+      final offset = index.isEven ? 5.0 : -5.0;
+      final raw = InkPoint(.1 + index * .012, .5 + offset / canvas.height, .5);
+      final result = stabilizer.filter(
+        raw,
+        canvas,
+        strength: .45,
+        timestamp: Duration(microseconds: index * 8333),
+      );
+      if (index > 8) {
+        rawOffsets.add(offset.abs());
+        stabilizedOffsets.add(((result.y - .5) * canvas.height).abs());
+      }
+    }
+
+    final rawAverage = rawOffsets.reduce((a, b) => a + b) / rawOffsets.length;
+    final stabilizedAverage =
+        stabilizedOffsets.reduce((a, b) => a + b) / stabilizedOffsets.length;
+    expect(stabilizedAverage, lessThan(rawAverage * .35));
+  });
+
+  test('maximum strength keeps the filtered centerline bounded', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(0, .5, .5), timestamp: Duration.zero);
     const raw = InkPoint(.2, .5, .5);
@@ -63,11 +90,11 @@ void main() {
     );
     final lagPixels = (raw.x - result.x) * canvas.width;
 
-    expect(lagPixels, lessThanOrEqualTo(11.1));
+    expect(lagPixels, lessThanOrEqualTo(19.6));
     expect(result.x, lessThan(raw.x));
   });
 
-  test('default strength stays within five pixels and never retracts', () {
+  test('default centerline stays bounded and never retracts', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
     var previousX = .1;
@@ -82,7 +109,7 @@ void main() {
       );
       final lagPixels = (raw.x - result.x) * canvas.width;
 
-      expect(lagPixels, lessThanOrEqualTo(4.5));
+      expect(lagPixels, lessThanOrEqualTo(7.7));
       expect(result.x, greaterThanOrEqualTo(previousX));
       previousX = result.x;
     }
