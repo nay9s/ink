@@ -12,6 +12,11 @@ enum InkTool {
   image,
 }
 
+/// Set when a freehand stroke has been snapped to a clean shape. The stroke
+/// then keeps exactly two points: the endpoints for [line], or opposite
+/// corners of the bounding box for [rectangle] and [ellipse].
+enum InkShapeKind { none, line, rectangle, ellipse }
+
 enum EraserMode { precision, stroke }
 
 enum BackgroundTemplate { blank, ruled, grid, dotted, cornell }
@@ -224,6 +229,7 @@ class InkStroke extends InkObject {
     this.dashed = false,
     this.pressureSensitivity = .7,
     this.geometryVersion = 2,
+    this.shapeKind = InkShapeKind.none,
     this.isSelected = false,
   });
 
@@ -238,6 +244,10 @@ class InkStroke extends InkObject {
   /// strokes are stabilized while they are captured, so rendering must keep
   /// their authored control points fixed as new Pencil samples arrive.
   final int geometryVersion;
+
+  /// Non-[InkShapeKind.none] when hold-to-snap replaced the freehand points
+  /// with a recognised shape drawn from its first and last point.
+  final InkShapeKind shapeKind;
 
   @override
   final bool isSelected;
@@ -255,6 +265,7 @@ class InkStroke extends InkObject {
     bool? dashed,
     double? pressureSensitivity,
     int? geometryVersion,
+    InkShapeKind? shapeKind,
   }) {
     return InkStroke(
       tool: tool ?? this.tool,
@@ -264,6 +275,7 @@ class InkStroke extends InkObject {
       dashed: dashed ?? this.dashed,
       pressureSensitivity: pressureSensitivity ?? this.pressureSensitivity,
       geometryVersion: geometryVersion ?? this.geometryVersion,
+      shapeKind: shapeKind ?? this.shapeKind,
       isSelected: isSelected ?? this.isSelected,
     );
   }
@@ -277,6 +289,7 @@ class InkStroke extends InkObject {
     'dashed': dashed,
     'pressureSensitivity': pressureSensitivity,
     'geometryVersion': geometryVersion,
+    'shapeKind': shapeKind.name,
     'points': points.map((point) => point.toJson()).toList(),
   };
 
@@ -290,12 +303,22 @@ class InkStroke extends InkObject {
     // Keep the historical renderer for notes saved before geometryVersion was
     // introduced, so installing an update never changes existing handwriting.
     geometryVersion: (value['geometryVersion'] as num?)?.toInt() ?? 1,
+    // Strokes saved before hold-to-snap existed are plain freehand ink.
+    shapeKind: _shapeKindByName(value['shapeKind']),
     points: (value['points'] as List)
         .map(
           (point) => InkPoint.fromJson(Map<String, dynamic>.from(point as Map)),
         )
         .toList(),
   );
+}
+
+InkShapeKind _shapeKindByName(Object? saved) {
+  if (saved is! String) return InkShapeKind.none;
+  for (final kind in InkShapeKind.values) {
+    if (kind.name == saved) return kind;
+  }
+  return InkShapeKind.none;
 }
 
 class InkFolder {
@@ -732,6 +755,7 @@ class AppSettings {
     this.defaultWidth = 2.0,
     this.sortBy = 'date_modified',
     this.allowFinger = false,
+    this.shapeAssist = true,
   });
 
   final ThemePreference themePreference;
@@ -740,12 +764,17 @@ class AppSettings {
   final String sortBy;
   final bool allowFinger;
 
+  /// Hold the pen still mid-stroke to snap what was drawn to a clean line,
+  /// rectangle or ellipse.
+  final bool shapeAssist;
+
   AppSettings copyWith({
     ThemePreference? themePreference,
     double? defaultSmoothing,
     double? defaultWidth,
     String? sortBy,
     bool? allowFinger,
+    bool? shapeAssist,
   }) {
     return AppSettings(
       themePreference: themePreference ?? this.themePreference,
@@ -753,6 +782,7 @@ class AppSettings {
       defaultWidth: defaultWidth ?? this.defaultWidth,
       sortBy: sortBy ?? this.sortBy,
       allowFinger: allowFinger ?? this.allowFinger,
+      shapeAssist: shapeAssist ?? this.shapeAssist,
     );
   }
 
@@ -762,6 +792,7 @@ class AppSettings {
     'defaultWidth': defaultWidth,
     'sortBy': sortBy,
     'allowFinger': allowFinger,
+    'shapeAssist': shapeAssist,
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> value) {
@@ -776,6 +807,7 @@ class AppSettings {
       defaultWidth: (value['defaultWidth'] as num?)?.toDouble() ?? 2.0,
       sortBy: value['sortBy'] as String? ?? 'date_modified',
       allowFinger: value['allowFinger'] as bool? ?? false,
+      shapeAssist: value['shapeAssist'] as bool? ?? true,
     );
   }
 }

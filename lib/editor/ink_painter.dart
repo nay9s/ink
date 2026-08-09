@@ -454,14 +454,37 @@ class InkPainter extends CustomPainter {
         ..blendMode = BlendMode.multiply;
     }
 
-    if (stroke.tool == InkTool.shape && stroke.points.length > 1) {
+    // Snapped shapes and the straight-line tool are both drawn as primitives
+    // from their first and last point, bypassing the freehand spline so
+    // corners stay sharp.
+    final drawsAsShape =
+        stroke.shapeKind != InkShapeKind.none || stroke.tool == InkTool.shape;
+    if (drawsAsShape && stroke.points.length > 1) {
       paint.strokeWidth = stroke.width * _scale;
       final start = _offsetFor(stroke.points.first, rect);
       final end = _offsetFor(stroke.points.last, rect);
-      if (stroke.dashed) {
-        _drawDashedSegment(canvas, start, end, paint);
-      } else {
-        canvas.drawLine(start, end, paint);
+      switch (stroke.shapeKind) {
+        case InkShapeKind.rectangle:
+          _drawShapeOutline(
+            canvas,
+            Path()..addRect(Rect.fromPoints(start, end)),
+            paint,
+            stroke.dashed,
+          );
+        case InkShapeKind.ellipse:
+          _drawShapeOutline(
+            canvas,
+            Path()..addOval(Rect.fromPoints(start, end)),
+            paint,
+            stroke.dashed,
+          );
+        case InkShapeKind.line:
+        case InkShapeKind.none:
+          if (stroke.dashed) {
+            _drawDashedSegment(canvas, start, end, paint);
+          } else {
+            canvas.drawLine(start, end, paint);
+          }
       }
       return;
     }
@@ -542,6 +565,25 @@ class InkPainter extends CustomPainter {
     // Keep the outline inside the hit area. A centered outline at [radius]
     // makes the visible ring larger by half its stroke width.
     canvas.drawCircle(center, math.max(0, radius - borderWidth / 2), border);
+  }
+
+  /// Strokes a closed shape outline, walking its metrics when dashed so the
+  /// dash pattern follows the path instead of restarting on every edge.
+  void _drawShapeOutline(Canvas canvas, Path path, Paint paint, bool dashed) {
+    if (!dashed) {
+      canvas.drawPath(path, paint);
+      return;
+    }
+    final dashLength = 10.0 * _scale;
+    final gapLength = 7.0 * _scale;
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final end = math.min(distance + dashLength, metric.length);
+        canvas.drawPath(metric.extractPath(distance, end), paint);
+        distance = end + gapLength;
+      }
+    }
   }
 
   double _drawDashedSegment(
