@@ -4,6 +4,14 @@ import 'package:ink_note/editor/selection_transform.dart';
 import 'package:ink_note/models.dart';
 
 void main() {
+  test('selection overlay remains a constant screen size while zooming', () {
+    final overlayScale = selectionOverlayScaleForCanvas(canvasToScreenScale: 4);
+
+    expect(overlayScale, .25);
+    expect(selectionHandleRadius * overlayScale * 4, selectionHandleRadius);
+    expect(selectionOutlinePadding * overlayScale * 4, selectionOutlinePadding);
+  });
+
   test('corner hit testing uses a finger-friendly target', () {
     const bounds = Rect.fromLTWH(100, 120, 200, 160);
 

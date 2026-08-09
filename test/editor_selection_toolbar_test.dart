@@ -60,12 +60,19 @@ void main() {
 
     final cut = find.byTooltip('Cut');
     expect(cut, findsOneWidget);
+    expect(find.byTooltip('Resize'), findsOneWidget);
     expect(tester.getCenter(cut).dy, greaterThan(primaryToolbarY + 100));
     final actionsSize = tester.getSize(
       find.byKey(const ValueKey('selection-actions-toolbar')),
     );
     expect(actionsSize.width, lessThan(260));
     expect(actionsSize.height, lessThan(60));
+
+    await tester.tap(find.byTooltip('Resize'));
+    await tester.pumpAndSettle();
+    expect(find.text('Resize selection'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
 
     await tester.tap(cut);
     await tester.pumpAndSettle();
@@ -214,7 +221,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byTooltip('Cut'), findsOneWidget);
 
-    final resize = await tester.startGesture(pagePoint(.62, .4));
+    final resize = await tester.startGesture(
+      pagePoint(.62, .4),
+      kind: PointerDeviceKind.stylus,
+    );
     await resize.moveBy(const Offset(100, 65));
     await tester.pump();
     await resize.up();

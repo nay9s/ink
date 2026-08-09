@@ -6,6 +6,26 @@ import '../models.dart';
 
 enum SelectionResizeHandle { topLeft, topRight, bottomLeft, bottomRight }
 
+/// Selection chrome is authored in screen pixels. The painter converts these
+/// values back into canvas units so corner handles stay usable at every zoom.
+const double selectionOutlinePadding = 10;
+const double selectionHandleRadius = 8;
+const double selectionHandleHitRadius = 36;
+
+double selectionOverlayScaleForCanvas({
+  required double canvasToScreenScale,
+  double contentScale = 1,
+}) {
+  final safeScreenScale =
+      canvasToScreenScale.isFinite && canvasToScreenScale > 0
+      ? canvasToScreenScale.clamp(.1, 8).toDouble()
+      : 1.0;
+  final safeContentScale = contentScale.isFinite && contentScale > 0
+      ? contentScale.clamp(.05, 8).toDouble()
+      : 1.0;
+  return (safeContentScale / safeScreenScale).clamp(.05, 8).toDouble();
+}
+
 Offset selectionResizeHandlePosition(
   Rect bounds,
   SelectionResizeHandle handle,

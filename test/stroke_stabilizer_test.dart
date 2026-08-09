@@ -50,7 +50,7 @@ void main() {
     expect(stabilizedAverage, lessThan(rawAverage * .5));
   });
 
-  test('maximum strength keeps the virtual pen within its lag bound', () {
+  test('maximum strength keeps the virtual pen close to the Pencil', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(0, .5, .5), timestamp: Duration.zero);
     const raw = InkPoint(.2, .5, .5);
@@ -63,8 +63,29 @@ void main() {
     );
     final lagPixels = (raw.x - result.x) * canvas.width;
 
-    expect(lagPixels, lessThanOrEqualTo(23.6));
+    expect(lagPixels, lessThanOrEqualTo(11.1));
     expect(result.x, lessThan(raw.x));
+  });
+
+  test('default strength stays within five pixels and never retracts', () {
+    final stabilizer = StrokeStabilizer()
+      ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
+    var previousX = .1;
+
+    for (var index = 1; index <= 24; index++) {
+      final raw = InkPoint(.1 + index * .01, .5, .5);
+      final result = stabilizer.filter(
+        raw,
+        canvas,
+        strength: .45,
+        timestamp: Duration(microseconds: index * 8333),
+      );
+      final lagPixels = (raw.x - result.x) * canvas.width;
+
+      expect(lagPixels, lessThanOrEqualTo(4.5));
+      expect(result.x, greaterThanOrEqualTo(previousX));
+      previousX = result.x;
+    }
   });
 
   test('finishing a stroke restores the exact lift-off point', () {

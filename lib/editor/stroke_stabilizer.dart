@@ -55,10 +55,12 @@ class StrokeStabilizer {
     final elapsedMs = _elapsedMilliseconds(timestamp);
     _lastTimestamp = timestamp;
 
-    // A stronger setting uses a longer time constant, which removes more
-    // high-frequency hand jitter. Calculating alpha from elapsed time keeps
-    // the feel consistent between 60 Hz mouse and 120 Hz Pencil samples.
-    final timeConstantMs = 3.0 + 45.0 * math.pow(amount, 1.5);
+    // Keep the live tip responsive. The earlier range allowed the virtual pen
+    // to trail far enough behind a curved Pencil movement that the visible
+    // stroke appeared to pull inward while it was still being written.
+    // Calculating alpha from elapsed time keeps the feel consistent between
+    // 60 Hz mouse and 120 Hz Pencil samples.
+    final timeConstantMs = 2.0 + 24.0 * math.pow(amount, 1.5);
     final follow = 1 - math.exp(-elapsedMs / timeConstantMs);
     final previousPixels = _toPixels(previous, screenSize);
     final rawPixels = _toPixels(raw, screenSize);
@@ -66,7 +68,7 @@ class StrokeStabilizer {
 
     // Bound latency like a short rubber band. Fast strokes remain responsive
     // instead of falling farther and farther behind the Pencil.
-    final maximumLag = 1.5 + 22.0 * math.pow(amount, 1.35);
+    final maximumLag = 1.0 + 10.0 * math.pow(amount, 1.35);
     final lag = rawPixels - nextPixels;
     if (lag.distance > maximumLag) {
       nextPixels = rawPixels - lag / lag.distance * maximumLag;
