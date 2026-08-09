@@ -108,6 +108,18 @@ class _EditorScreenState extends State<EditorScreen>
   InkTool _lastPenTool = InkTool.pen;
   InkPoint? _eraserCursor;
   final StrokeStabilizer _strokeStabilizer = StrokeStabilizer();
+
+  /// Collects stabilized samples into one averaged control point per span of
+  /// travel. Its lifetime must match the stabilizer's exactly — leftover span
+  /// state would average the tail of one stroke into the head of the next —
+  /// so both are driven together by [_resetStrokeCapture].
+  final StrokeControlPointSpacer _controlPointSpacer =
+      StrokeControlPointSpacer();
+
+  void _resetStrokeCapture() {
+    _strokeStabilizer.reset();
+    _controlPointSpacer.reset();
+  }
   bool _activeStrokeHasRawTip = false;
   static const List<PenPreset> _defaultPenSizePresets = [
     PenPreset(size: 1.5, smoothing: .45),
@@ -1167,7 +1179,7 @@ class _EditorScreenState extends State<EditorScreen>
         _zoomMode = true;
         _activeStroke = null;
         _activeStrokeHasRawTip = false;
-        _strokeStabilizer.reset();
+        _resetStrokeCapture();
         _temporaryEraser = false;
         _eraserCursor = null;
       });
@@ -1876,15 +1888,13 @@ class _EditorScreenState extends State<EditorScreen>
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.isEmpty) return;
 
-    // Only the real stabilized sample becomes a control point, and only once
-    // it is far enough from the last one. See strokeCapturePointsTowards for
-    // why the gap must not be subdivided, and kMinimumControlPointSpacing for
-    // why near-duplicate samples are dropped. Measuring in screen pixels — as
-    // the stabilizer does — keeps the spacing feeling the same at every zoom
-    // level instead of getting denser as you zoom in.
-    stroke.points.addAll(
-      strokeCapturePointsTowards(stroke.points.last, target, screenSize),
-    );
+    // One control point per span of travel, averaged over the samples along
+    // it — see StrokeControlPointSpacer for why averaging rather than
+    // thinning is what takes the fur off a slowly drawn line. Measuring in
+    // screen pixels, as the stabilizer does, keeps the spacing feeling the
+    // same at every zoom level instead of getting denser as you zoom in.
+    final point = _controlPointSpacer.add(target, screenSize);
+    if (point != null) stroke.points.add(point);
   }
 
   void _appendSmoothedPoints(PointerMoveEvent event, Size size) {
@@ -2264,7 +2274,7 @@ class _EditorScreenState extends State<EditorScreen>
   void _cancelTouchInteractionForPinch() {
     if (_activePointerKind != PointerDeviceKind.touch) return;
     _cancelLineAssist();
-    _strokeStabilizer.reset();
+    _resetStrokeCapture();
 
     // A drawing/edit snapshot is created when the first finger goes down.
     // Restore it so starting a two-finger gesture never leaves a stray mark.
@@ -2339,7 +2349,7 @@ class _EditorScreenState extends State<EditorScreen>
       _activeStrokeHasRawTip = false;
       _activePointer = null;
       _activePointerKind = null;
-      _strokeStabilizer.reset();
+      _resetStrokeCapture();
     }
     if (!_accept(event)) return;
 
@@ -2367,7 +2377,7 @@ class _EditorScreenState extends State<EditorScreen>
     _temporaryEraser = _eventIsEraser(event);
     _interactionChanged = false;
     _activeStrokeHasRawTip = false;
-    _strokeStabilizer.reset();
+    _resetStrokeCapture();
     _snapshot();
     final resizingSelection =
         resizeHandle != null &&
@@ -2416,6 +2426,7 @@ class _EditorScreenState extends State<EditorScreen>
           pressureSensitivity: _pressureSensitivity,
         );
         _activeStrokeHasRawTip = false;
+        _controlPointSpacer.start(point);
         if (_usesStrokeStabilizer(_activeStroke!)) {
           _strokeStabilizer.start(point, timestamp: event.timeStamp);
         }
@@ -3410,7 +3421,7 @@ class _EditorScreenState extends State<EditorScreen>
           finishingStroke.points.add(raw);
         }
         _activeStrokeHasRawTip = false;
-        _strokeStabilizer.reset();
+        _resetStrokeCapture();
       } else {
         finishingStroke.points.addAll(
           _strokeStabilizer.finish(raw, screenSize),
@@ -3418,7 +3429,7 @@ class _EditorScreenState extends State<EditorScreen>
       }
     } else {
       _activeStrokeHasRawTip = false;
-      _strokeStabilizer.reset();
+      _resetStrokeCapture();
     }
     setState(() {
       if (_tool == InkTool.lasso &&
