@@ -30,6 +30,7 @@ import 'native_pdf_ink_importer.dart';
 import 'native_pdf_page_display.dart';
 import 'page_strip.dart';
 import 'pdf_vector_exporter.dart';
+import 'pdf_zoom_out_size_delegate.dart';
 import 'selection_toolbar_layout.dart';
 import 'selection_transform.dart';
 import 'stroke_stabilizer.dart';
@@ -3847,6 +3848,9 @@ class _EditorScreenState extends State<EditorScreen>
           params: pdfrx.PdfViewerParams(
             backgroundColor: _editorWorkspaceColor(context),
             pagePaintCallbacks: [_paintInkForPdfrxPage],
+            // Without this a landscape slide bottoms out at fit-to-width and
+            // touches every edge, while portrait pages keep side margins.
+            sizeDelegateProvider: const PdfZoomOutSizeDelegateProvider(),
           ),
         ),
       ),
