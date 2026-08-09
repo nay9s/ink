@@ -109,10 +109,10 @@ void main() {
     expect(stabilizer.lastRawPoint, isNull);
   });
 
-  test('finishing a curved stroke continues its incoming tangent', () {
+  test('finishing a stroke advances monotonically without overshoot', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
-    final previous = stabilizer.filter(
+    stabilizer.filter(
       const InkPoint(.2, .5, .5),
       canvas,
       strength: 1,
@@ -124,23 +124,31 @@ void main() {
       strength: 1,
       timestamp: const Duration(milliseconds: 16),
     );
-    final tail = stabilizer.finish(const InkPoint(.3, .68, .5), canvas);
-
-    final incoming = Offset(
-      (current.x - previous.x) * canvas.width,
-      (current.y - previous.y) * canvas.height,
+    const liftOff = InkPoint(.3, .68, .5);
+    final tail = stabilizer.finish(liftOff, canvas);
+    final chord = Offset(
+      (liftOff.x - current.x) * canvas.width,
+      (liftOff.y - current.y) * canvas.height,
     );
-    final outgoing = Offset(
-      (tail.first.x - current.x) * canvas.width,
-      (tail.first.y - current.y) * canvas.height,
-    );
-    final alignment =
-        (incoming.dx * outgoing.dx + incoming.dy * outgoing.dy) /
-        (incoming.distance * outgoing.distance);
+    var previousProgress = 0.0;
 
     expect(tail, isNotEmpty);
-    expect(alignment, greaterThan(.8));
-    expect(tail.last.x, .3);
-    expect(tail.last.y, .68);
+    for (final sample in tail) {
+      final delta = Offset(
+        (sample.x - current.x) * canvas.width,
+        (sample.y - current.y) * canvas.height,
+      );
+      final progress =
+          (delta.dx * chord.dx + delta.dy * chord.dy) / chord.distanceSquared;
+      final perpendicularDistance =
+          (delta.dx * chord.dy - delta.dy * chord.dx).abs() / chord.distance;
+
+      expect(progress, greaterThanOrEqualTo(previousProgress - 1e-9));
+      expect(progress, inInclusiveRange(0.0, 1.0));
+      expect(perpendicularDistance, lessThan(1e-6));
+      previousProgress = progress;
+    }
+    expect(tail.last.x, liftOff.x);
+    expect(tail.last.y, liftOff.y);
   });
 }

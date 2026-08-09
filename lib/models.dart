@@ -223,6 +223,7 @@ class InkStroke extends InkObject {
     required this.points,
     this.dashed = false,
     this.pressureSensitivity = .7,
+    this.geometryVersion = 2,
     this.isSelected = false,
   });
 
@@ -232,6 +233,11 @@ class InkStroke extends InkObject {
   final List<InkPoint> points;
   final bool dashed;
   final double pressureSensitivity;
+
+  /// Version 1 strokes use the legacy whole-stroke smoothing pass. Version 2
+  /// strokes are stabilized while they are captured, so rendering must keep
+  /// their authored control points fixed as new Pencil samples arrive.
+  final int geometryVersion;
 
   @override
   final bool isSelected;
@@ -248,6 +254,7 @@ class InkStroke extends InkObject {
     List<InkPoint>? points,
     bool? dashed,
     double? pressureSensitivity,
+    int? geometryVersion,
   }) {
     return InkStroke(
       tool: tool ?? this.tool,
@@ -256,6 +263,7 @@ class InkStroke extends InkObject {
       points: points ?? this.points,
       dashed: dashed ?? this.dashed,
       pressureSensitivity: pressureSensitivity ?? this.pressureSensitivity,
+      geometryVersion: geometryVersion ?? this.geometryVersion,
       isSelected: isSelected ?? this.isSelected,
     );
   }
@@ -268,6 +276,7 @@ class InkStroke extends InkObject {
     'width': width,
     'dashed': dashed,
     'pressureSensitivity': pressureSensitivity,
+    'geometryVersion': geometryVersion,
     'points': points.map((point) => point.toJson()).toList(),
   };
 
@@ -278,6 +287,9 @@ class InkStroke extends InkObject {
     dashed: value['dashed'] as bool? ?? false,
     pressureSensitivity:
         (value['pressureSensitivity'] as num?)?.toDouble() ?? .7,
+    // Keep the historical renderer for notes saved before geometryVersion was
+    // introduced, so installing an update never changes existing handwriting.
+    geometryVersion: (value['geometryVersion'] as num?)?.toInt() ?? 1,
     points: (value['points'] as List)
         .map(
           (point) => InkPoint.fromJson(Map<String, dynamic>.from(point as Map)),

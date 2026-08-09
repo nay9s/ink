@@ -15,6 +15,35 @@ class StrokeGeometrySample {
       );
 }
 
+/// Keeps already-stabilized control points in their authored positions.
+///
+/// This operation is prefix-stable: appending a new Pencil sample never moves
+/// or resamples an older point. It is used by geometry-version 2 strokes so a
+/// live line cannot appear to shorten or wobble backward while being written.
+List<StrokeGeometrySample> prepareStableStrokeSamples(
+  Iterable<StrokeGeometrySample> input, {
+  double minimumDistance = .05,
+}) {
+  final resolvedMinimum = minimumDistance.isFinite
+      ? math.max(0.0, minimumDistance)
+      : .05;
+  final minimumDistanceSquared = resolvedMinimum * resolvedMinimum;
+  final output = <StrokeGeometrySample>[];
+  for (final sample in input) {
+    if (!sample.offset.dx.isFinite ||
+        !sample.offset.dy.isFinite ||
+        !sample.pressure.isFinite) {
+      continue;
+    }
+    if (output.isEmpty ||
+        (sample.offset - output.last.offset).distanceSquared >=
+            minimumDistanceSquared) {
+      output.add(sample);
+    }
+  }
+  return output;
+}
+
 /// Normalizes sample spacing and removes high-frequency Pencil jitter.
 ///
 /// The filter is symmetric, so unlike live stabilization it adds no visible

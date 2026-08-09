@@ -20,15 +20,14 @@ class ImportedInkStroke {
 class NativePdfInkImporter {
   NativePdfInkImporter._();
 
-  static const MethodChannel _channel =
-      MethodChannel('ink_note/pdf_ink_importer');
+  static const MethodChannel _channel = MethodChannel(
+    'ink_note/pdf_ink_importer',
+  );
 
   /// Returns strokes recovered from [pdfPath]'s own annotations, or an empty
   /// list if there was nothing to import (including on platforms without
   /// this channel, e.g. Android).
-  static Future<List<ImportedInkStroke>> extractStrokes(
-    String pdfPath,
-  ) async {
+  static Future<List<ImportedInkStroke>> extractStrokes(String pdfPath) async {
     if (defaultTargetPlatform != TargetPlatform.iOS) return const [];
 
     List<Object?>? raw;
@@ -101,6 +100,9 @@ class NativePdfInkImporter {
         color: Color(colorValue),
         width: width,
         points: points,
+        // These points were authored by the legacy native PDF renderer, not
+        // the prefix-stable live capture pipeline.
+        geometryVersion: 1,
       ),
     );
   }

@@ -4,6 +4,29 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_note/editor/stroke_geometry.dart';
 
 void main() {
+  test('stable preparation never moves an existing sample prefix', () {
+    const source = <StrokeGeometrySample>[
+      StrokeGeometrySample(Offset(0, 0), .4),
+      StrokeGeometrySample(Offset(3, 1), .45),
+      StrokeGeometrySample(Offset(7, 3), .5),
+      StrokeGeometrySample(Offset(11, 2), .55),
+      StrokeGeometrySample(Offset(15, 6), .6),
+      StrokeGeometrySample(Offset(19, 8), .65),
+    ];
+    final initial = prepareStableStrokeSamples(source.take(4));
+    final extended = prepareStableStrokeSamples(source);
+
+    expect(
+      extended.take(initial.length).map((sample) => sample.offset),
+      initial.map((sample) => sample.offset),
+    );
+    expect(
+      extended.take(initial.length).map((sample) => sample.pressure),
+      initial.map((sample) => sample.pressure),
+    );
+    expect(extended.last.offset, source.last.offset);
+  });
+
   test('resampling uses even arc-length spacing and keeps exact endpoints', () {
     final result = prepareStrokeSamples(
       const <StrokeGeometrySample>[
