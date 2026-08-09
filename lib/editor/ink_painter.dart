@@ -348,15 +348,23 @@ class InkPainter extends CustomPainter {
   List<StrokeGeometrySample> _filteredRenderPoints(
     InkStroke stroke,
     Rect rect,
-  ) => prepareStrokeSamples(
-    stroke.points.map(
+  ) {
+    final samples = stroke.points.map(
       (point) => StrokeGeometrySample(_offsetFor(point, rect), point.pressure),
-    ),
-    // Pen widths are authored against a 1000-unit-wide page. Basing the
-    // spacing on that same coordinate system keeps the curve identical at
-    // every zoom level instead of revealing new corners when enlarged.
-    sampleSpacing: 3 * _geometryUnit(rect),
-  );
+    );
+    if (stroke.geometryVersion >= 2) {
+      return prepareStableStrokeSamples(
+        samples,
+        minimumDistance: .05 * _geometryUnit(rect),
+      );
+    }
+    return prepareStrokeSamples(
+      samples,
+      // Preserve the established appearance of strokes stored before the
+      // prefix-stable capture pipeline was introduced.
+      sampleSpacing: 3 * _geometryUnit(rect),
+    );
+  }
 
   List<StrokeGeometrySample> _interpolatedPoints(
     List<StrokeGeometrySample> source,

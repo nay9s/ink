@@ -106,6 +106,7 @@ class _EditorScreenState extends State<EditorScreen>
   InkTool _lastPenTool = InkTool.pen;
   InkPoint? _eraserCursor;
   final StrokeStabilizer _strokeStabilizer = StrokeStabilizer();
+  bool _activeStrokeHasRawTip = false;
   static const List<PenPreset> _defaultPenSizePresets = [
     PenPreset(size: 1.5, smoothing: .45),
     PenPreset(size: 2, smoothing: .45),
@@ -1146,6 +1147,7 @@ class _EditorScreenState extends State<EditorScreen>
         // Pressing the active pen again enters read mode.
         _zoomMode = true;
         _activeStroke = null;
+        _activeStrokeHasRawTip = false;
         _strokeStabilizer.reset();
         _temporaryEraser = false;
         _eraserCursor = null;
@@ -1796,6 +1798,36 @@ class _EditorScreenState extends State<EditorScreen>
 
   bool _usesStrokeStabilizer(InkStroke stroke) => stroke.tool != InkTool.shape;
 
+  double _inkPointDistanceInPixels(
+    InkPoint first,
+    InkPoint second,
+    Size screenSize,
+  ) {
+    final dx = (second.x - first.x) * screenSize.width;
+    final dy = (second.y - first.y) * screenSize.height;
+    return math.sqrt(dx * dx + dy * dy);
+  }
+
+  void _discardActiveStrokeRawTip() {
+    final stroke = _activeStroke;
+    if (!_activeStrokeHasRawTip || stroke == null || stroke.points.length < 2) {
+      _activeStrokeHasRawTip = false;
+      return;
+    }
+    stroke.points.removeLast();
+    _activeStrokeHasRawTip = false;
+  }
+
+  void _appendExactRawTip(InkPoint raw, Size screenSize) {
+    final stroke = _activeStroke;
+    if (stroke == null || stroke.points.isEmpty) return;
+    if (_inkPointDistanceInPixels(stroke.points.last, raw, screenSize) <= .05) {
+      return;
+    }
+    stroke.points.add(raw);
+    _activeStrokeHasRawTip = true;
+  }
+
   void _appendPointTowards(InkPoint target, Size size) {
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.isEmpty) return;
@@ -1826,6 +1858,11 @@ class _EditorScreenState extends State<EditorScreen>
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.isEmpty) return;
 
+    // The previous raw endpoint was provisional. Remove it in the same frame,
+    // append the next stable control point, then put the new exact Pencil tip
+    // back. The visible line therefore reaches the Pencil without baking its
+    // high-frequency jitter into the permanent control points.
+    _discardActiveStrokeRawTip();
     final raw = _point(event, size);
     final screenSize = _stabilizerScreenSize(size);
     final target = _usesStrokeStabilizer(stroke)
@@ -1837,6 +1874,7 @@ class _EditorScreenState extends State<EditorScreen>
           )
         : raw;
     _appendPointTowards(target, size);
+    _appendExactRawTip(raw, screenSize);
   }
 
   void _cancelLineAssist() {
@@ -1870,6 +1908,7 @@ class _EditorScreenState extends State<EditorScreen>
         _strokeStabilizer.lastRawPoint ?? stroke.points.last,
       ],
     );
+    _activeStrokeHasRawTip = false;
     _straightLinePreview = true;
   }
 
@@ -2103,6 +2142,7 @@ class _EditorScreenState extends State<EditorScreen>
 
     setState(() {
       _activeStroke = null;
+      _activeStrokeHasRawTip = false;
       _activePointer = null;
       _activePointerKind = null;
       _temporaryEraser = false;
@@ -2164,6 +2204,7 @@ class _EditorScreenState extends State<EditorScreen>
           _isStylus(event) && _activePointerKind == PointerDeviceKind.touch;
       if (!stylusReplacingPalm) return;
       _activeStroke = null;
+      _activeStrokeHasRawTip = false;
       _activePointer = null;
       _activePointerKind = null;
       _strokeStabilizer.reset();
@@ -2193,6 +2234,7 @@ class _EditorScreenState extends State<EditorScreen>
     _activePointerKind = event.kind;
     _temporaryEraser = _eventIsEraser(event);
     _interactionChanged = false;
+    _activeStrokeHasRawTip = false;
     _strokeStabilizer.reset();
     _snapshot();
     final resizingSelection =
@@ -2241,6 +2283,7 @@ class _EditorScreenState extends State<EditorScreen>
           dashed: activeTool == InkTool.highlighter ? false : _dashedStroke,
           pressureSensitivity: _pressureSensitivity,
         );
+        _activeStrokeHasRawTip = false;
         if (_usesStrokeStabilizer(_activeStroke!)) {
           _strokeStabilizer.start(point, timestamp: event.timeStamp);
         }
@@ -2248,11 +2291,10 @@ class _EditorScreenState extends State<EditorScreen>
         _interactionChanged = true;
       }
     });
-    if (resizingSelection ||
-        touchedImageIndex != null ||
-        _tool == InkTool.lasso) {
-      _invalidatePdfrxInkOverlay();
-    }
+    // pdfrx owns the page's paint loop, so rebuilding this Flutter widget is
+    // not enough to refresh its pagePaintCallbacks. Invalidate on every
+    // accepted canvas gesture so a new stroke appears from Pencil-down.
+    _invalidatePdfrxInkOverlay();
     _restartLineAssistTimer();
     if (_interactionChanged) _scheduleSave();
   }
@@ -3208,13 +3250,10 @@ class _EditorScreenState extends State<EditorScreen>
     }
     if (_activePointer != event.pointer) return;
     final point = _point(event, size);
-    var selectionOverlayChanged = false;
-
     setState(() {
       if (_activeSelectionResizeHandle != null) {
         _resizeSelection(point, size);
         _interactionChanged = true;
-        selectionOverlayChanged = true;
       } else if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
           _lastSelectPosition != null) {
         if (_selectionMoveMode && _hasSelection) {
@@ -3223,10 +3262,8 @@ class _EditorScreenState extends State<EditorScreen>
           _moveSelection(dx, dy);
           _interactionChanged = true;
           _lastSelectPosition = Offset(point.x, point.y);
-          selectionOverlayChanged = true;
         } else {
           _lassoPath.add(point);
-          selectionOverlayChanged = true;
         }
       } else if (_temporaryEraser) {
         final previous = _eraserCursor;
@@ -3240,6 +3277,7 @@ class _EditorScreenState extends State<EditorScreen>
           _activeStroke = _activeStroke!.copyWith(
             points: [_activeStroke!.points.first, _point(event, size)],
           );
+          _activeStrokeHasRawTip = false;
         } else {
           _appendSmoothedPoints(event, size);
           _restartLineAssistTimer();
@@ -3247,7 +3285,10 @@ class _EditorScreenState extends State<EditorScreen>
         _interactionChanged = true;
       }
     });
-    if (selectionOverlayChanged) _invalidatePdfrxInkOverlay();
+    // A parent setState does not invalidate pdfrx's internal page paint stream.
+    // Refresh it for every accepted Pencil sample so the visible endpoint does
+    // not trail behind and then jump forward on a later viewer repaint.
+    _invalidatePdfrxInkOverlay();
     if (_interactionChanged) _scheduleSave();
   }
 
@@ -3281,13 +3322,29 @@ class _EditorScreenState extends State<EditorScreen>
         event is! PointerCancelEvent &&
         !_straightLinePreview &&
         _usesStrokeStabilizer(finishingStroke)) {
-      finishingStroke.points.addAll(
-        _strokeStabilizer.finish(
-          _point(event, size),
-          _stabilizerScreenSize(size),
-        ),
-      );
+      final raw = _point(event, size);
+      final screenSize = _stabilizerScreenSize(size);
+      if (_activeStrokeHasRawTip) {
+        // Keep the exact endpoint that was already visible during the final
+        // live frame. If iOS supplies a slightly newer lift-off position,
+        // extend to it without deleting or recalculating any visible point.
+        if (_inkPointDistanceInPixels(
+              finishingStroke.points.last,
+              raw,
+              screenSize,
+            ) >
+            .05) {
+          finishingStroke.points.add(raw);
+        }
+        _activeStrokeHasRawTip = false;
+        _strokeStabilizer.reset();
+      } else {
+        finishingStroke.points.addAll(
+          _strokeStabilizer.finish(raw, screenSize),
+        );
+      }
     } else {
+      _activeStrokeHasRawTip = false;
       _strokeStabilizer.reset();
     }
     setState(() {
@@ -3307,6 +3364,7 @@ class _EditorScreenState extends State<EditorScreen>
       if (_activeStroke != null) _currentObjects.add(_activeStroke!);
       final autoReturnToPen = _eraserAutoDeselect && _tool == InkTool.eraser;
       _activeStroke = null;
+      _activeStrokeHasRawTip = false;
       _activePointer = null;
       _activePointerKind = null;
       _temporaryEraser = false;
@@ -3318,7 +3376,7 @@ class _EditorScreenState extends State<EditorScreen>
       _straightLinePreview = false;
       _selectionPointerStartedInside = false;
     });
-    if (_tool == InkTool.lasso) _invalidatePdfrxInkOverlay();
+    _invalidatePdfrxInkOverlay();
     if (_interactionChanged) {
       _scheduleSave();
     } else if (_undo.isNotEmpty) {

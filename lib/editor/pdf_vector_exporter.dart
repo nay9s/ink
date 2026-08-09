@@ -259,10 +259,15 @@ class PdfVectorExporter {
         StrokeGeometrySample(Offset(mapped.$1, mapped.$2), point.pressure),
       );
     }
-    final filtered = prepareStrokeSamples(
-      source,
-      sampleSpacing: 3 * mapper.pointsPerLogicalUnit,
-    );
+    final filtered = stroke.geometryVersion >= 2
+        ? prepareStableStrokeSamples(
+            source,
+            minimumDistance: .05 * mapper.pointsPerLogicalUnit,
+          )
+        : prepareStrokeSamples(
+            source,
+            sampleSpacing: 3 * mapper.pointsPerLogicalUnit,
+          );
     return <_PdfInkSample>[
       for (final sample in filtered)
         _PdfInkSample(sample.offset.dx, sample.offset.dy, sample.pressure),
