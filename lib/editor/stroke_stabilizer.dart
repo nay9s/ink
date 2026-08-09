@@ -48,20 +48,20 @@ class StrokeStabilizer {
     final elapsedMs = _elapsedMilliseconds(timestamp);
     _lastTimestamp = timestamp;
 
-    // Keep the live tip responsive. The earlier range allowed the virtual pen
-    // to trail far enough behind a curved Pencil movement that the visible
-    // stroke appeared to pull inward while it was still being written.
-    // Calculating alpha from elapsed time keeps the feel consistent between
-    // 60 Hz mouse and 120 Hz Pencil samples.
-    final timeConstantMs = 2.0 + 24.0 * math.pow(amount, 1.5);
+    // The editor renders the exact raw Pencil tip separately, so this internal
+    // centerline can filter more of the sample-to-sample wobble without making
+    // the visible ink feel delayed. Calculating alpha from elapsed time keeps
+    // the result consistent between 60 Hz mouse and 120 Hz Pencil samples.
+    final timeConstantMs = 3.0 + 45.0 * math.pow(amount, 1.5);
     final follow = 1 - math.exp(-elapsedMs / timeConstantMs);
     final previousPixels = _toPixels(previous, screenSize);
     final rawPixels = _toPixels(raw, screenSize);
     var nextPixels = previousPixels + (rawPixels - previousPixels) * follow;
 
-    // Bound latency like a short rubber band. Fast strokes remain responsive
-    // instead of falling farther and farther behind the Pencil.
-    final maximumLag = 1.0 + 10.0 * math.pow(amount, 1.35);
+    // Bound the filtered centerline like a short rubber band. The exact raw
+    // endpoint remains visible at all times, while this limit prevents a fast
+    // curve from being rounded so aggressively that handwriting changes shape.
+    final maximumLag = 1.5 + 18.0 * math.pow(amount, 1.35);
     final lag = rawPixels - nextPixels;
     if (lag.distance > maximumLag) {
       nextPixels = rawPixels - lag / lag.distance * maximumLag;
