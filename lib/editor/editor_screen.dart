@@ -31,6 +31,7 @@ import 'native_pdf_page_display.dart';
 import 'page_strip.dart';
 import 'pdf_vector_exporter.dart';
 import 'selection_toolbar_layout.dart';
+import 'selection_transform.dart';
 import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
 import 'toolbar_docking.dart';
@@ -185,6 +186,11 @@ class _EditorScreenState extends State<EditorScreen>
   final List<InkPoint> _selectionLassoPath = [];
   bool _selectionMoveMode = false;
   bool _selectionPointerStartedInside = false;
+  SelectionResizeHandle? _activeSelectionResizeHandle;
+  Rect? _selectionResizeStartBounds;
+  Offset? _selectionResizeStartPointer;
+  final Map<int, InkObject> _selectionResizeStartObjects = <int, InkObject>{};
+  final List<InkPoint> _selectionResizeStartPath = <InkPoint>[];
   final List<InkObject> _selectionClipboard = [];
   final Map<String, ui.Image> _decodedImages = <String, ui.Image>{};
   final Map<String, Future<void>> _imageLoads = <String, Future<void>>{};
@@ -1701,10 +1707,10 @@ class _EditorScreenState extends State<EditorScreen>
 
   bool _accept(PointerEvent event) {
     if (_zoomMode) return false;
+    if (event.kind == PointerDeviceKind.touch) {
+      return _selectionPointerStartedInside;
+    }
     if (_tool == InkTool.lasso && _hasSelection) {
-      if (event.kind == PointerDeviceKind.touch) {
-        return _selectionPointerStartedInside;
-      }
       if (_isStylus(event) || event.kind == PointerDeviceKind.mouse) {
         return true;
       }
@@ -1718,15 +1724,13 @@ class _EditorScreenState extends State<EditorScreen>
     if (event.kind == PointerDeviceKind.mouse || _isStylus(event)) {
       return true;
     }
-    if (event.kind != PointerDeviceKind.touch ||
-        _tool != InkTool.lasso ||
-        !_hasSelection) {
+    if (event.kind != PointerDeviceKind.touch || _zoomMode) {
       return false;
     }
     final renderObject = _canvasKey.currentContext?.findRenderObject();
     if (renderObject is! RenderBox || !renderObject.hasSize) return false;
     final local = renderObject.globalToLocal(event.position);
-    return _selectionContainsLocalOffset(local, renderObject.size);
+    return _touchCanEditAt(local, renderObject.size);
   }
 
   Widget _protectStylusDrawingFromViewportPan(Widget child) {
@@ -1832,10 +1836,7 @@ class _EditorScreenState extends State<EditorScreen>
             timestamp: event.timeStamp,
           )
         : raw;
-    // Point density is measured in visible pixels. Without the transformed
-    // size, zooming a normal page spreads samples apart on screen and exposes
-    // angular joins while drawing.
-    _appendPointTowards(target, screenSize);
+    _appendPointTowards(target, size);
   }
 
   void _cancelLineAssist() {
@@ -2109,19 +2110,16 @@ class _EditorScreenState extends State<EditorScreen>
       _interactionChanged = false;
       _lastSelectPosition = null;
       _lassoPath.clear();
+      _resetSelectionResize();
       _straightLinePreview = false;
     });
   }
 
   void _pointerDown(PointerDownEvent event, Size size) {
     final point = _point(event, size);
-    final hasLassoSelection = _tool == InkTool.lasso && _hasSelection;
-    final startedInsideSelection =
-        hasLassoSelection &&
-        _selectionContainsLocalOffset(event.localPosition, size);
-    _selectionPointerStartedInside = startedInsideSelection;
+    final isTouch = event.kind == PointerDeviceKind.touch;
 
-    if (event.kind == PointerDeviceKind.touch) {
+    if (isTouch) {
       _touchPointers.add(event.pointer);
       if (_touchPointers.length >= 2) {
         _pendingTouchTapPointer = null;
@@ -2133,9 +2131,20 @@ class _EditorScreenState extends State<EditorScreen>
       }
     }
 
-    if (hasLassoSelection &&
-        !startedInsideSelection &&
-        event.kind == PointerDeviceKind.touch) {
+    final resizeHandle = isTouch
+        ? _selectionResizeHandleAt(event.localPosition, size)
+        : null;
+    final touchedImageIndex = isTouch && resizeHandle == null
+        ? _findImageIndexAt(event.localPosition, size)
+        : null;
+    var startedInsideSelection =
+        resizeHandle != null ||
+        (_hasSelection &&
+            _selectionContainsLocalOffset(event.localPosition, size)) ||
+        touchedImageIndex != null;
+    _selectionPointerStartedInside = startedInsideSelection;
+
+    if (_hasSelection && !startedInsideSelection && isTouch) {
       _pendingTouchTapPointer = event.pointer;
       _pendingTouchTapDownPosition = event.localPosition;
       _pendingTouchTapMoved = false;
@@ -2152,6 +2161,18 @@ class _EditorScreenState extends State<EditorScreen>
     }
     if (!_accept(event)) return;
 
+    if (touchedImageIndex != null) {
+      final image = _currentObjects[touchedImageIndex] as InkImage;
+      if (!image.isSelected) {
+        _clearSelection();
+        _currentObjects[touchedImageIndex] = image.copyWith(isSelected: true);
+      }
+      _tool = InkTool.lasso;
+      _selectionMoveMode = true;
+      startedInsideSelection = true;
+      _selectionPointerStartedInside = true;
+    }
+
     final movingTextSelection =
         _tool == InkTool.text && _selectionMoveMode && _hasSelection;
     if (_tool == InkTool.text && !movingTextSelection) {
@@ -2165,13 +2186,19 @@ class _EditorScreenState extends State<EditorScreen>
     _interactionChanged = false;
     _strokeStabilizer.reset();
     _snapshot();
+    final resizingSelection =
+        resizeHandle != null &&
+        _beginSelectionResize(resizeHandle, point, size);
 
     setState(() {
-      if (_tool == InkTool.lasso || movingTextSelection) {
+      if (resizingSelection) {
+        _tool = InkTool.lasso;
+        _selectionMoveMode = true;
+        _lastSelectPosition = null;
+        _lassoPath.clear();
+      } else if (_tool == InkTool.lasso || movingTextSelection) {
         _lastSelectPosition = Offset(point.x, point.y);
-        if (_tool == InkTool.lasso &&
-            _hasSelection &&
-            _selectionPointerStartedInside) {
+        if (_tool == InkTool.lasso && _hasSelection && startedInsideSelection) {
           _selectionMoveMode = true;
           _lassoPath.clear();
         } else if (_selectionMoveMode && _hasSelection && movingTextSelection) {
@@ -2225,9 +2252,158 @@ class _EditorScreenState extends State<EditorScreen>
       }
     }
     _selectionLassoPath.clear();
+    _resetSelectionResize();
   }
 
   bool get _hasSelection => _currentObjects.any((item) => item.isSelected);
+
+  double get _selectionHitScale =>
+      _usePdfrxViewer ? 1 : _eraserCanvasToScreenScale.clamp(.1, 8).toDouble();
+
+  int? _findImageIndexAt(Offset localPosition, Size canvasSize) {
+    if (canvasSize.width <= 0 || canvasSize.height <= 0) return null;
+    final hitPadding = 12 / _selectionHitScale;
+    for (var index = _currentObjects.length - 1; index >= 0; index--) {
+      final object = _currentObjects[index];
+      if (object is! InkImage) continue;
+      final bounds = Rect.fromLTWH(
+        object.x * canvasSize.width,
+        object.y * canvasSize.height,
+        object.width * canvasSize.width,
+        object.height * canvasSize.height,
+      );
+      if (bounds.inflate(hitPadding).contains(localPosition)) return index;
+    }
+    return null;
+  }
+
+  SelectionResizeHandle? _selectionResizeHandleAt(
+    Offset localPosition,
+    Size canvasSize,
+  ) {
+    if (!_hasSelection) return null;
+    final bounds = _selectionVisualBounds(canvasSize);
+    if (bounds == null) return null;
+    return hitTestSelectionResizeHandle(
+      localPosition,
+      bounds,
+      hitRadius: 26 / _selectionHitScale,
+    );
+  }
+
+  bool _touchCanEditAt(Offset localPosition, Size canvasSize) {
+    if (_selectionResizeHandleAt(localPosition, canvasSize) != null) {
+      return true;
+    }
+    if (_hasSelection &&
+        _selectionContainsLocalOffset(localPosition, canvasSize)) {
+      return true;
+    }
+    return _findImageIndexAt(localPosition, canvasSize) != null;
+  }
+
+  Rect? _selectionTransformBounds(Size canvasSize) {
+    if (_selectionLassoPath.length >= 3) {
+      return inkPointBounds(_selectionLassoPath);
+    }
+    if (canvasSize.width <= 0 || canvasSize.height <= 0) return null;
+
+    Rect? bounds;
+    for (final object in _currentObjects.where((item) => item.isSelected)) {
+      Rect? objectBounds;
+      if (object is InkStroke) {
+        objectBounds = inkPointBounds(object.points);
+      } else if (object is InkText) {
+        final textBounds = _textBounds(object, canvasSize);
+        objectBounds = Rect.fromLTRB(
+          textBounds.left / canvasSize.width,
+          textBounds.top / canvasSize.height,
+          textBounds.right / canvasSize.width,
+          textBounds.bottom / canvasSize.height,
+        );
+      } else if (object is InkImage) {
+        objectBounds = Rect.fromLTWH(
+          object.x,
+          object.y,
+          object.width,
+          object.height,
+        );
+      }
+      if (objectBounds == null) continue;
+      bounds = bounds == null
+          ? objectBounds
+          : bounds.expandToInclude(objectBounds);
+    }
+    return bounds;
+  }
+
+  bool _beginSelectionResize(
+    SelectionResizeHandle handle,
+    InkPoint pointer,
+    Size canvasSize,
+  ) {
+    final bounds = _selectionTransformBounds(canvasSize);
+    if (bounds == null ||
+        math.max(bounds.width.abs(), bounds.height.abs()) <= 1e-6) {
+      return false;
+    }
+    _activeSelectionResizeHandle = handle;
+    _selectionResizeStartBounds = bounds;
+    _selectionResizeStartPointer = Offset(pointer.x, pointer.y);
+    _selectionResizeStartObjects
+      ..clear()
+      ..addEntries(
+        Iterable<int>.generate(_currentObjects.length)
+            .where((index) => _currentObjects[index].isSelected)
+            .map((index) => MapEntry(index, _currentObjects[index])),
+      );
+    _selectionResizeStartPath
+      ..clear()
+      ..addAll(_selectionLassoPath);
+    return _selectionResizeStartObjects.isNotEmpty;
+  }
+
+  void _resizeSelection(InkPoint pointer, Size canvasSize) {
+    final handle = _activeSelectionResizeHandle;
+    final bounds = _selectionResizeStartBounds;
+    final startPointer = _selectionResizeStartPointer;
+    if (handle == null || bounds == null || startPointer == null) return;
+
+    final scale = selectionUniformScaleForDrag(
+      initialBounds: bounds,
+      handle: handle,
+      startPointer: startPointer,
+      currentPointer: Offset(pointer.x, pointer.y),
+      minimumExtent:
+          28 / math.max(canvasSize.width, canvasSize.height).clamp(1, 1e9),
+    );
+    final anchor = selectionResizeOppositeAnchor(bounds, handle);
+    for (final entry in _selectionResizeStartObjects.entries) {
+      if (entry.key < 0 || entry.key >= _currentObjects.length) continue;
+      _currentObjects[entry.key] = scaleSelectionObject(
+        entry.value,
+        anchor: anchor,
+        scale: scale,
+      );
+    }
+    if (_selectionResizeStartPath.isNotEmpty) {
+      _selectionLassoPath
+        ..clear()
+        ..addAll(
+          _selectionResizeStartPath.map(
+            (point) => scaleSelectionPoint(point, anchor, scale),
+          ),
+        );
+    }
+  }
+
+  void _resetSelectionResize() {
+    _activeSelectionResizeHandle = null;
+    _selectionResizeStartBounds = null;
+    _selectionResizeStartPointer = null;
+    _selectionResizeStartObjects.clear();
+    _selectionResizeStartPath.clear();
+  }
 
   void _moveSelection(double dx, double dy) {
     for (var index = 0; index < _currentObjects.length; index++) {
@@ -2890,7 +3066,10 @@ class _EditorScreenState extends State<EditorScreen>
     final point = _point(event, size);
 
     setState(() {
-      if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
+      if (_activeSelectionResizeHandle != null) {
+        _resizeSelection(point, size);
+        _interactionChanged = true;
+      } else if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
           _lastSelectPosition != null) {
         if (_selectionMoveMode && _hasSelection) {
           final dx = point.x - _lastSelectPosition!.dx;
@@ -2984,6 +3163,7 @@ class _EditorScreenState extends State<EditorScreen>
       _temporaryEraser = false;
       _eraserCursor = null;
       _lastSelectPosition = null;
+      _resetSelectionResize();
       if (_tool == InkTool.lasso) _lassoPath.clear();
       if (autoReturnToPen) _tool = _lastDrawingTool;
       _straightLinePreview = false;
@@ -3419,14 +3599,12 @@ class _EditorScreenState extends State<EditorScreen>
 
   bool _shouldCapturePdfrxPointer(PointerDownEvent event) {
     if (_isStylus(event) || event.kind == PointerDeviceKind.mouse) return true;
-    if (event.kind != PointerDeviceKind.touch ||
-        _tool != InkTool.lasso ||
-        !_hasSelection) {
+    if (event.kind != PointerDeviceKind.touch || _zoomMode) {
       return false;
     }
     final hit = _resolvePdfrxPageAt(event.localPosition);
     if (hit == null || hit.pageIndex != _currentPageIndex) return false;
-    return _selectionContainsLocalOffset(
+    return _touchCanEditAt(
       event.localPosition - hit.rect.topLeft,
       hit.rect.size,
     );
@@ -5163,6 +5341,9 @@ class _EditorScreenState extends State<EditorScreen>
                                                                 const SizedBox(),
                                                       ),
                                                     CustomPaint(
+                                                      key: ValueKey(
+                                                        'ink-canvas-$pageIndex',
+                                                      ),
                                                       painter: InkPainter(
                                                         strokes:
                                                             _pages[pageIndex],

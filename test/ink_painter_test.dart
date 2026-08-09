@@ -83,4 +83,38 @@ void main() {
     expect(coloredRows, lessThanOrEqualTo(2));
     image.dispose();
   });
+
+  test('a stroke keeps identical geometry when it becomes committed', () async {
+    final stroke = InkStroke(
+      tool: InkTool.pen,
+      color: Colors.green,
+      width: 5,
+      pressureSensitivity: .7,
+      points: const <InkPoint>[
+        InkPoint(.25, .2, .4),
+        InkPoint(.31, .26, .55),
+        InkPoint(.29, .36, .7),
+        InkPoint(.38, .43, .65),
+        InkPoint(.34, .55, .5),
+        InkPoint(.44, .67, .45),
+      ],
+    );
+
+    Future<List<int>> render({required bool active}) async {
+      const size = Size(160, 160);
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder)
+        ..drawRect(Offset.zero & size, Paint()..color = Colors.white);
+      InkPainter(
+        strokes: active ? const <InkObject>[] : <InkObject>[stroke],
+        activeStroke: active ? stroke : null,
+      ).paint(canvas, size);
+      final image = await recorder.endRecording().toImage(160, 160);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose();
+      return bytes!.buffer.asUint8List().toList(growable: false);
+    }
+
+    expect(await render(active: true), await render(active: false));
+  });
 }

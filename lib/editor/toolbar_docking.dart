@@ -78,6 +78,37 @@ ToolbarDock nearestToolbarDock(
   return distances.entries.reduce((a, b) => a.value <= b.value ? a : b).key;
 }
 
+ToolbarDock toolbarDockWithHysteresis({
+  required Offset position,
+  required Size viewport,
+  required ToolbarDock currentDock,
+  EdgeInsets reservedInsets = EdgeInsets.zero,
+  double switchHysteresis = 28,
+}) {
+  final nearest = nearestToolbarDock(
+    position,
+    viewport,
+    reservedInsets: reservedInsets,
+  );
+  if (nearest == currentDock) return nearest;
+
+  final nearestDistance = toolbarDistanceFromEdge(
+    position,
+    viewport,
+    nearest,
+    reservedInsets: reservedInsets,
+  );
+  final currentDistance = toolbarDistanceFromEdge(
+    position,
+    viewport,
+    currentDock,
+    reservedInsets: reservedInsets,
+  );
+  return nearestDistance + switchHysteresis < currentDistance
+      ? nearest
+      : currentDock;
+}
+
 double toolbarDistanceFromEdge(
   Offset position,
   Size viewport,
@@ -100,12 +131,11 @@ ToolbarDockingResult resolveToolbarDrop({
   required ToolbarPlacement options,
   EdgeInsets reservedInsets = EdgeInsets.zero,
   double outerDropDepth = 62,
+  ToolbarDock? targetDock,
 }) {
-  final targetDock = nearestToolbarDock(
-    position,
-    viewport,
-    reservedInsets: reservedInsets,
-  );
+  final resolvedTargetDock =
+      targetDock ??
+      nearestToolbarDock(position, viewport, reservedInsets: reservedInsets);
   final otherKind = dragged == EditorToolbarKind.primary
       ? EditorToolbarKind.options
       : EditorToolbarKind.primary;
@@ -113,22 +143,22 @@ ToolbarDockingResult resolveToolbarDrop({
   late ToolbarPlacement draggedPlacement;
   late ToolbarPlacement otherPlacement;
 
-  if (other.dock == targetDock) {
+  if (other.dock == resolvedTargetDock) {
     final dropIsOuter =
         toolbarDistanceFromEdge(
           position,
           viewport,
-          targetDock,
+          resolvedTargetDock,
           reservedInsets: reservedInsets,
         ) <=
         outerDropDepth;
     draggedPlacement = ToolbarPlacement(
-      dock: targetDock,
+      dock: resolvedTargetDock,
       order: dropIsOuter ? 0 : 1,
     );
     otherPlacement = other.copyWith(order: dropIsOuter ? 1 : 0);
   } else {
-    draggedPlacement = ToolbarPlacement(dock: targetDock, order: 0);
+    draggedPlacement = ToolbarPlacement(dock: resolvedTargetDock, order: 0);
     // A toolbar left alone at an edge always slides into the outer slot.
     otherPlacement = other.copyWith(order: 0);
   }
@@ -188,8 +218,15 @@ class DockableEditorToolbars extends StatefulWidget {
 
 class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
   final GlobalKey _surfaceKey = GlobalKey();
+  final Map<EditorToolbarKind, GlobalKey> _toolbarKeys = {
+    for (final kind in EditorToolbarKind.values) kind: GlobalKey(),
+  };
   EditorToolbarKind? _dragging;
   Offset? _dragPosition;
+  Offset? _dragStartPosition;
+  Offset? _dragGrabOffset;
+  Size? _dragFeedbackSize;
+  Axis? _dragFeedbackAxis;
   ToolbarDockingResult? _preview;
 
   ToolbarDragCallbacks _dragCallbacks(EditorToolbarKind kind, Size viewport) =>
@@ -209,15 +246,34 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
   ToolbarDockingResult _resolve(
     EditorToolbarKind kind,
     Offset localPosition,
-    Size viewport,
-  ) => resolveToolbarDrop(
+    Size viewport, {
+    ToolbarDock? targetDock,
+  }) => resolveToolbarDrop(
     dragged: kind,
     position: localPosition,
     viewport: viewport,
     primary: widget.primary,
     options: widget.options,
     reservedInsets: widget.reservedInsets,
+    targetDock: targetDock,
   );
+
+  Rect? _toolbarRect(EditorToolbarKind kind) {
+    final surfaceBox =
+        _surfaceKey.currentContext?.findRenderObject() as RenderBox?;
+    final toolbarBox =
+        _toolbarKeys[kind]?.currentContext?.findRenderObject() as RenderBox?;
+    if (surfaceBox == null || toolbarBox == null || !toolbarBox.hasSize) {
+      return null;
+    }
+    final topLeft = surfaceBox.globalToLocal(
+      toolbarBox.localToGlobal(Offset.zero),
+    );
+    return topLeft & toolbarBox.size;
+  }
+
+  ToolbarDockingResult get _currentDocking =>
+      normalizeToolbarDocking(primary: widget.primary, options: widget.options);
 
   void _startDrag(
     EditorToolbarKind kind,
@@ -225,10 +281,17 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
     Size viewport,
   ) {
     final local = _localPosition(globalPosition);
+    final toolbarRect = _toolbarRect(kind);
     setState(() {
       _dragging = kind;
       _dragPosition = local;
-      _preview = _resolve(kind, local, viewport);
+      _dragStartPosition = local;
+      _dragGrabOffset = toolbarRect == null
+          ? Offset.zero
+          : local - toolbarRect.topLeft;
+      _dragFeedbackSize = toolbarRect?.size;
+      _dragFeedbackAxis = toolbarAxisForDock(_placementFor(kind).dock);
+      _preview = _currentDocking;
     });
   }
 
@@ -236,9 +299,20 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
     final kind = _dragging;
     if (kind == null) return;
     final local = _localPosition(globalPosition);
+    final start = _dragStartPosition;
+    final currentDock =
+        _preview?.placementFor(kind).dock ?? _placementFor(kind).dock;
+    final targetDock = start != null && (local - start).distance < 24
+        ? _placementFor(kind).dock
+        : toolbarDockWithHysteresis(
+            position: local,
+            viewport: viewport,
+            currentDock: currentDock,
+            reservedInsets: widget.reservedInsets,
+          );
     setState(() {
       _dragPosition = local;
-      _preview = _resolve(kind, local, viewport);
+      _preview = _resolve(kind, local, viewport, targetDock: targetDock);
     });
   }
 
@@ -246,11 +320,11 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
     final kind = _dragging;
     final position = _dragPosition;
     if (kind == null || position == null) return;
-    final result = _resolve(kind, position, viewport);
+    final targetDock =
+        _preview?.placementFor(kind).dock ?? _placementFor(kind).dock;
+    final result = _resolve(kind, position, viewport, targetDock: targetDock);
     setState(() {
-      _dragging = null;
-      _dragPosition = null;
-      _preview = null;
+      _clearDragState();
     });
     widget.onChanged(result);
   }
@@ -258,10 +332,18 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
   void _cancelDrag() {
     if (_dragging == null) return;
     setState(() {
-      _dragging = null;
-      _dragPosition = null;
-      _preview = null;
+      _clearDragState();
     });
+  }
+
+  void _clearDragState() {
+    _dragging = null;
+    _dragPosition = null;
+    _dragStartPosition = null;
+    _dragGrabOffset = null;
+    _dragFeedbackSize = null;
+    _dragFeedbackAxis = null;
+    _preview = null;
   }
 
   ToolbarPlacement _placementFor(EditorToolbarKind kind) =>
@@ -287,13 +369,20 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
       80.0,
       viewport.height - widget.reservedInsets.vertical - 16,
     );
-    return ConstrainedBox(
-      constraints: axis == Axis.horizontal
-          ? BoxConstraints(maxWidth: maxWidth)
-          : BoxConstraints(maxHeight: maxHeight),
-      child: KeyedSubtree(
-        key: ValueKey('${kind.name}-toolbar'),
-        child: _builderFor(kind)(context, axis, _dragCallbacks(kind, viewport)),
+    return KeyedSubtree(
+      key: _toolbarKeys[kind],
+      child: ConstrainedBox(
+        constraints: axis == Axis.horizontal
+            ? BoxConstraints(maxWidth: maxWidth)
+            : BoxConstraints(maxHeight: maxHeight),
+        child: KeyedSubtree(
+          key: ValueKey('${kind.name}-toolbar'),
+          child: _builderFor(kind)(
+            context,
+            axis,
+            _dragCallbacks(kind, viewport),
+          ),
+        ),
       ),
     );
   }
@@ -406,28 +495,53 @@ class _DockableEditorToolbarsState extends State<DockableEditorToolbars> {
   Widget _dragFeedback(BuildContext context, Size viewport) {
     final kind = _dragging;
     final position = _dragPosition;
-    final preview = _preview;
-    if (kind == null || position == null || preview == null) {
+    final grabOffset = _dragGrabOffset;
+    final axis = _dragFeedbackAxis;
+    if (kind == null ||
+        position == null ||
+        grabOffset == null ||
+        axis == null) {
       return const SizedBox.shrink();
     }
-    final dock = preview.placementFor(kind).dock;
-    final axis = toolbarAxisForDock(dock);
-    final safePosition = Offset(
-      position.dx.clamp(0.0, viewport.width),
-      position.dy.clamp(0.0, viewport.height),
+    final feedbackSize = _dragFeedbackSize ?? Size.zero;
+    final desiredTopLeft = position - grabOffset;
+    final safeTopLeft = Offset(
+      desiredTopLeft.dx.clamp(
+        0.0,
+        math.max(0.0, viewport.width - feedbackSize.width),
+      ),
+      desiredTopLeft.dy.clamp(
+        0.0,
+        math.max(0.0, viewport.height - feedbackSize.height),
+      ),
     );
     return Positioned(
-      left: safePosition.dx,
-      top: safePosition.dy,
-      child: FractionalTranslation(
-        translation: const Offset(-.5, -.5),
-        child: IgnorePointer(
+      left: safeTopLeft.dx,
+      top: safeTopLeft.dy,
+      child: IgnorePointer(
+        child: RepaintBoundary(
+          key: ValueKey('${kind.name}-toolbar-drag-feedback'),
           child: Opacity(
-            opacity: .82,
-            child: _builderFor(kind)(
-              context,
-              axis,
-              const ToolbarDragCallbacks(),
+            opacity: .9,
+            child: ConstrainedBox(
+              constraints: axis == Axis.horizontal
+                  ? BoxConstraints(
+                      maxWidth: math.max(
+                        80.0,
+                        viewport.width - widget.reservedInsets.horizontal - 16,
+                      ),
+                    )
+                  : BoxConstraints(
+                      maxHeight: math.max(
+                        80.0,
+                        viewport.height - widget.reservedInsets.vertical - 16,
+                      ),
+                    ),
+              child: _builderFor(kind)(
+                context,
+                axis,
+                const ToolbarDragCallbacks(),
+              ),
             ),
           ),
         ),
