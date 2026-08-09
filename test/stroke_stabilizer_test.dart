@@ -183,24 +183,69 @@ void main() {
   });
 
   group('capture keeps curves smooth', () {
-    test('a moved sample contributes exactly one control point', () {
+    test('a far sample contributes exactly one control point, itself', () {
       const start = InkPoint(.2, .2, .5);
       const target = InkPoint(.6, .5, .7);
+      final spacer = StrokeControlPointSpacer()..start(start);
 
-      final appended = strokeCapturePointsTowards(start, target, canvas);
+      final appended = spacer.add(target, canvas);
 
-      // Subdividing here would place collinear points on the chord, which the
-      // renderer's spline then follows as a straight line.
-      expect(appended, hasLength(1));
-      expect(appended.single.x, target.x);
-      expect(appended.single.y, target.y);
+      // A single sample past the span is its own mean, so a fast stroke —
+      // whose samples already land a span apart — is captured unchanged.
+      // Subdividing instead would place collinear points on the chord, which
+      // the renderer's spline then follows as a straight line.
+      expect(appended, isNotNull);
+      expect(appended!.x, target.x);
+      expect(appended.y, target.y);
     });
 
-    test('a sub-pixel move contributes nothing', () {
+    test('a sub-pixel move contributes nothing yet', () {
       const start = InkPoint(.5, .5, .5);
       const target = InkPoint(.5001, .5001, .5);
+      final spacer = StrokeControlPointSpacer()..start(start);
 
-      expect(strokeCapturePointsTowards(start, target, canvas), isEmpty);
+      expect(spacer.add(target, canvas), isNull);
+    });
+
+    test('samples within a span are averaged, not thinned', () {
+      const start = InkPoint(.5, .5, .5);
+      final spacer = StrokeControlPointSpacer(spanPixels: 4)..start(start);
+
+      // Four samples marching right, alternating a pixel above and below the
+      // true path. Thinning would keep the last one and its full error; the
+      // mean sits on the path instead.
+      InkPoint? emitted;
+      for (var i = 1; i <= 4; i++) {
+        final wobble = i.isEven ? 1.0 : -1.0;
+        emitted ??= spacer.add(
+          InkPoint(
+            .5 + i / canvas.width,
+            .5 + wobble / canvas.height,
+            .5,
+          ),
+          canvas,
+        );
+      }
+
+      expect(emitted, isNotNull);
+      // Mean of -1, +1, -1, +1 is 0: the wobble cancels.
+      expect(emitted!.y * canvas.height, closeTo(.5 * canvas.height, .001));
+    });
+
+    test('a new stroke does not inherit the previous span', () {
+      final spacer = StrokeControlPointSpacer(spanPixels: 4)
+        ..start(const InkPoint(.1, .1, .5));
+      spacer.add(const InkPoint(.1, .105, .5), canvas);
+
+      spacer.start(const InkPoint(.8, .8, .5));
+      final emitted = spacer.add(
+        InkPoint(.8 + 5 / canvas.width, .8, .5),
+        canvas,
+      );
+
+      // Averaging in the abandoned stroke's samples would drag this far left.
+      expect(emitted, isNotNull);
+      expect(emitted!.x, closeTo(.8 + 5 / canvas.width, .0001));
     });
 
     test('captured circle renders as a curve, not a polygon', () {
@@ -221,11 +266,11 @@ void main() {
         );
       }
 
+      final spacer = StrokeControlPointSpacer()..start(pointAt(0));
       final captured = <InkPoint>[pointAt(0)];
       for (var index = 1; index <= steps; index++) {
-        captured.addAll(
-          strokeCapturePointsTowards(captured.last, pointAt(index), canvas),
-        );
+        final point = spacer.add(pointAt(index), canvas);
+        if (point != null) captured.add(point);
       }
 
       // Same pipeline the painter uses for a geometry-version 2 stroke.

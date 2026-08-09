@@ -4,42 +4,93 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 
-/// Minimum spacing between captured control points, in screen pixels.
+/// Distance the pen travels, in screen pixels, per stored control point.
 ///
 /// Writing slowly delivers 120Hz samples only a fraction of a pixel apart, so
-/// each one is dominated by hand and sensor jitter rather than by the stroke's
-/// direction. Keeping them all made the renderer's spline turn through every
-/// bit of that noise, which reads as a jagged line. Spacing control points out
-/// shrinks the angle each jitter can introduce: measured on a jittered slow
-/// arc it removes roughly two thirds of the excess turning while leaving the
-/// path itself where the hand drew it, and fast strokes are untouched because
-/// their samples already land further apart than this.
-const double kMinimumControlPointSpacing = 4;
-
-/// Control points to append when the stabilized pen position moves from
-/// [start] to [target].
+/// each one is dominated by hand tremor and sensor noise rather than by the
+/// stroke's direction. Storing them all made the renderer's spline turn
+/// through every bit of that noise, which reads as a furry, jagged line.
 ///
-/// This deliberately never subdivides the gap. Interpolated points would sit
-/// exactly on the straight chord between two real samples, and the renderer's
-/// spline passes through every control point — a cubic whose endpoints and
-/// tangents all lie on one line *is* that line. Filling gaps therefore pins
-/// the curve flat along each chord and turns handwriting into a polygon with
-/// rounded corners. The painter already curves between sparse control points
-/// (see createSmoothStrokePath in stroke_geometry.dart), so the correct
-/// contribution here is the single real sample.
-List<InkPoint> strokeCapturePointsTowards(
-  InkPoint start,
-  InkPoint target,
-  Size size, {
-  double minimumDistance = kMinimumControlPointSpacing,
-}) {
-  final dxPixels = (target.x - start.x) * size.width;
-  final dyPixels = (target.y - start.y) * size.height;
-  final distancePixels = math.sqrt(dxPixels * dxPixels + dyPixels * dyPixels);
-  if (!distancePixels.isFinite || distancePixels < minimumDistance) {
-    return const <InkPoint>[];
+/// 4px keeps enough points for the small marks Thai script is full of while
+/// giving each span roughly eight samples to average — see
+/// [StrokeControlPointSpacer] for why averaging rather than thinning is what
+/// removes the noise.
+const double kControlPointSpanPixels = 4;
+
+/// Turns the stream of stabilized pen samples into stored control points, one
+/// per [spanPixels] of travel, each the mean of the samples along that span.
+///
+/// Averaging is the point. Simply dropping the samples in between — keeping
+/// whichever one happens to land past the threshold — leaves every stored
+/// point carrying its full tremor, so the line stops being furry only to start
+/// showing angular kinks instead, and pushing the spacing out far enough to
+/// hide those flattens real curvature. Averaging N samples pulls the noise
+/// down by sqrt(N) while leaving the point on the path the hand drew, so the
+/// same number of control points comes out roughly twice as smooth.
+///
+/// Fast strokes are unaffected: their samples already arrive further apart
+/// than a span, so each span holds one sample and the mean is that sample.
+///
+/// Spans are measured from the pen's real position rather than from the
+/// emitted mean, which sits about half a span behind it. Measuring from the
+/// mean would halve the spacing and undo the averaging.
+class StrokeControlPointSpacer {
+  StrokeControlPointSpacer({this.spanPixels = kControlPointSpanPixels});
+
+  final double spanPixels;
+
+  InkPoint? _spanStart;
+  double _sumX = 0;
+  double _sumY = 0;
+  double _sumPressure = 0;
+  int _count = 0;
+
+  void start(InkPoint point) {
+    _spanStart = point;
+    _clearSpan();
   }
-  return <InkPoint>[target];
+
+  void reset() {
+    _spanStart = null;
+    _clearSpan();
+  }
+
+  /// The control point to store for [sample], or null while the pen has not
+  /// yet travelled a full span.
+  InkPoint? add(InkPoint sample, Size screenSize) {
+    final spanStart = _spanStart;
+    if (spanStart == null) {
+      start(sample);
+      return null;
+    }
+    if (!sample.x.isFinite || !sample.y.isFinite) return null;
+
+    _sumX += sample.x;
+    _sumY += sample.y;
+    _sumPressure += sample.pressure;
+    _count++;
+
+    final dx = (sample.x - spanStart.x) * screenSize.width;
+    final dy = (sample.y - spanStart.y) * screenSize.height;
+    final travelled = math.sqrt(dx * dx + dy * dy);
+    if (!travelled.isFinite || travelled < spanPixels) return null;
+
+    final mean = InkPoint(
+      _sumX / _count,
+      _sumY / _count,
+      _sumPressure / _count,
+    );
+    _spanStart = sample;
+    _clearSpan();
+    return mean;
+  }
+
+  void _clearSpan() {
+    _sumX = 0;
+    _sumY = 0;
+    _sumPressure = 0;
+    _count = 0;
+  }
 }
 
 /// A bounded, time-based low-pass filter for live pen input.
