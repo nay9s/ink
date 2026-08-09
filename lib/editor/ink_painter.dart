@@ -222,15 +222,24 @@ class InkPainter extends CustomPainter {
 
     final normalizedBounds = inkPointBounds(selectionPath);
     if (normalizedBounds != null) {
-      _drawResizeHandles(
-        canvas,
-        Rect.fromLTRB(
-          rect.left + normalizedBounds.left * rect.width,
-          rect.top + normalizedBounds.top * rect.height,
-          rect.left + normalizedBounds.right * rect.width,
-          rect.top + normalizedBounds.bottom * rect.height,
-        ),
+      final boundsRect = Rect.fromLTRB(
+        rect.left + normalizedBounds.left * rect.width,
+        rect.top + normalizedBounds.top * rect.height,
+        rect.left + normalizedBounds.right * rect.width,
+        rect.top + normalizedBounds.bottom * rect.height,
       );
+      // The lasso outline alone traces the drawn path, which does not show
+      // how far the selection actually reaches. Draw the same bounding frame
+      // the box selection uses so the handles have a visible extent to pull.
+      canvas.drawRect(
+        boundsRect,
+        Paint()
+          ..isAntiAlias = true
+          ..color = Colors.blueAccent.withValues(alpha: .55)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _lassoStrokeWidth * _selectionScale,
+      );
+      _drawResizeHandles(canvas, boundsRect);
     }
   }
 

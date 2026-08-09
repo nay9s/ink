@@ -60,19 +60,18 @@ void main() {
 
     final cut = find.byTooltip('Cut');
     expect(cut, findsOneWidget);
-    expect(find.byTooltip('Resize'), findsOneWidget);
+    // Resizing is done by dragging the selection's corner handles, so the
+    // toolbar carries layer ordering instead of a redundant resize dialog.
+    expect(find.byTooltip('Resize'), findsNothing);
+    expect(find.byTooltip('Send to back'), findsOneWidget);
+    expect(find.byTooltip('Bring to front'), findsOneWidget);
     expect(tester.getCenter(cut).dy, greaterThan(primaryToolbarY + 100));
     final actionsSize = tester.getSize(
       find.byKey(const ValueKey('selection-actions-toolbar')),
     );
-    expect(actionsSize.width, lessThan(260));
+    // Net one more button than before (resize out, two layer actions in).
+    expect(actionsSize.width, lessThan(320));
     expect(actionsSize.height, lessThan(60));
-
-    await tester.tap(find.byTooltip('Resize'));
-    await tester.pumpAndSettle();
-    expect(find.text('Resize selection'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
 
     await tester.tap(cut);
     await tester.pumpAndSettle();
@@ -235,5 +234,82 @@ void main() {
     expect(resizedStroke.width, greaterThan(4));
     expect(resizedStroke.points.last.x, greaterThan(.5));
     expect(resizedStroke.points.last.y, greaterThan(.31));
+  });
+
+  testWidgets('layer actions move the selected image behind and in front', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.binding.setSurfaceSize(const Size(1024, 768));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final now = DateTime(2026, 8, 9);
+    // Objects paint in list order, so the image starting last is in front.
+    final document = InkDocument(
+      id: 'layer-order-test',
+      title: 'Layer order test',
+      colorValue: Colors.blue.toARGB32(),
+      createdAt: now,
+      updatedAt: now,
+      pages: [
+        <InkObject>[
+          InkStroke(
+            tool: InkTool.pen,
+            color: Colors.blue,
+            width: 4,
+            pressureSensitivity: 0,
+            points: const [InkPoint(.1, .6, 1), InkPoint(.2, .65, 1)],
+          ),
+          InkImage(
+            path: 'missing-test-image.png',
+            x: .3,
+            y: .15,
+            width: .2,
+            height: .12,
+          ),
+        ],
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EditorScreen(
+          document: document,
+          openDocuments: [document],
+          activeDocumentId: document.id,
+          onSelectTab: (_) {},
+          onCloseTab: (_) {},
+          onNewTab: () {},
+          onExit: () {},
+          onDocumentSaved: (_) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final canvas = find.byKey(const ValueKey('ink-canvas-0'));
+    final canvasRect = tester.getRect(canvas);
+    await tester.tapAt(
+      Offset(
+        canvasRect.left + canvasRect.width * .4,
+        canvasRect.top + canvasRect.height * .21,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Send to back'), findsOneWidget);
+
+    List<InkObject> objectsNow() =>
+        (tester.widget<CustomPaint>(canvas).painter! as InkPainter).strokes;
+
+    expect(objectsNow().last, isA<InkImage>());
+
+    await tester.tap(find.byTooltip('Send to back'));
+    await tester.pumpAndSettle();
+    expect(objectsNow().first, isA<InkImage>());
+    expect(objectsNow().last, isA<InkStroke>());
+
+    await tester.tap(find.byTooltip('Bring to front'));
+    await tester.pumpAndSettle();
+    expect(objectsNow().last, isA<InkImage>());
+    expect(objectsNow().first, isA<InkStroke>());
   });
 }

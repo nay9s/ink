@@ -186,6 +186,11 @@ class _EditorScreenState extends State<EditorScreen>
   final List<InkPoint> _lassoPath = [];
   final List<InkPoint> _selectionLassoPath = [];
   bool _selectionMoveMode = false;
+
+  /// True only while a selection is actively being dragged or resized, as
+  /// opposed to _selectionMoveMode, which stays armed after the pointer
+  /// lifts. The selection toolbar is skipped entirely while this is set.
+  bool _draggingSelection = false;
   bool _selectionPointerStartedInside = false;
   SelectionResizeHandle? _activeSelectionResizeHandle;
   Rect? _selectionResizeStartBounds;
@@ -2776,115 +2781,45 @@ class _EditorScreenState extends State<EditorScreen>
     _scheduleSave();
   }
 
-  Size? _activeSelectionCanvasSize() {
-    if (_usePdfrxViewer) {
-      return _pdfrxScreenRectForPage(_currentPageIndex)?.size;
-    }
-    final canvasObject = _canvasKey.currentContext?.findRenderObject();
-    return canvasObject is RenderBox && canvasObject.hasSize
-        ? canvasObject.size
-        : null;
-  }
-
-  double _maximumSelectionScaleAroundCenter(Rect bounds) {
-    final anchor = bounds.center;
-    var maximum = 3.0;
-
-    void limit(double extent, double available) {
-      if (extent > 1e-9) maximum = math.min(maximum, available / extent);
-    }
-
-    limit(anchor.dx - bounds.left, anchor.dx);
-    limit(bounds.right - anchor.dx, 1 - anchor.dx);
-    limit(anchor.dy - bounds.top, anchor.dy);
-    limit(bounds.bottom - anchor.dy, 1 - anchor.dy);
-    if (!maximum.isFinite) return 3;
-    return maximum.clamp(1.0, 3.0).toDouble();
-  }
-
-  Future<void> _showSelectionResizeDialog() async {
+  /// Objects paint in list order, so list position is z-order. Moving the
+  /// selection to the start or the end of the page's object list is what
+  /// "send to back" / "bring to front" mean, and it keeps relative order
+  /// among the selected objects themselves.
+  void _reorderSelection({required bool toFront}) {
     if (!_hasSelection) return;
-    final canvasSize = _activeSelectionCanvasSize();
-    if (canvasSize == null || canvasSize.isEmpty) return;
-    final bounds = _selectionTransformBounds(canvasSize);
-    if (bounds == null ||
-        math.max(bounds.width.abs(), bounds.height.abs()) <= 1e-6) {
-      return;
+    final selected = <InkObject>[];
+    final rest = <InkObject>[];
+    for (final object in _currentObjects) {
+      (object.isSelected ? selected : rest).add(object);
     }
-    final maximumScale = _maximumSelectionScaleAroundCenter(bounds);
-    var pendingScale = 1.0;
-    final result = await showDialog<double>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Resize selection'),
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '${(pendingScale * 100).round()}%',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                Slider(
-                  key: const ValueKey('selection-resize-slider'),
-                  value: pendingScale,
-                  min: .25,
-                  max: maximumScale,
-                  divisions: math.max(1, ((maximumScale - .25) * 20).round()),
-                  label: '${(pendingScale * 100).round()}%',
-                  onChanged: (value) =>
-                      setDialogState(() => pendingScale = value),
-                ),
-                const Text(
-                  'You can also drag any blue corner handle directly.',
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, pendingScale),
-              child: const Text('Apply'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted || result == null || (result - 1).abs() < .001) return;
+    if (selected.isEmpty || rest.isEmpty) return;
+
+    final reordered = toFront
+        ? <InkObject>[...rest, ...selected]
+        : <InkObject>[...selected, ...rest];
+    // Skip the undo entry and the save when the order already matches.
+    var identical = true;
+    for (var index = 0; index < reordered.length; index++) {
+      if (!_identicalObject(reordered[index], _currentObjects[index])) {
+        identical = false;
+        break;
+      }
+    }
+    if (identical) return;
 
     _snapshot();
-    final anchor = bounds.center;
     setState(() {
-      for (var index = 0; index < _currentObjects.length; index++) {
-        final object = _currentObjects[index];
-        if (!object.isSelected) continue;
-        _currentObjects[index] = scaleSelectionObject(
-          object,
-          anchor: anchor,
-          scale: result,
-        );
-      }
-      if (_selectionLassoPath.isNotEmpty) {
-        for (var index = 0; index < _selectionLassoPath.length; index++) {
-          _selectionLassoPath[index] = scaleSelectionPoint(
-            _selectionLassoPath[index],
-            anchor,
-            result,
-          );
-        }
-      }
-      _selectionMoveMode = true;
+      _pages[_currentPageIndex] = reordered;
     });
     _scheduleSave();
     _invalidatePdfrxInkOverlay();
   }
+
+  bool _identicalObject(InkObject a, InkObject b) => a == b || identical(a, b);
+
+  void _sendSelectionToBack() => _reorderSelection(toFront: false);
+
+  void _bringSelectionToFront() => _reorderSelection(toFront: true);
 
   void _recolorSelection(Color color) {
     if (!_hasSelection) return;
@@ -3238,6 +3173,7 @@ class _EditorScreenState extends State<EditorScreen>
     setState(() {
       if (_activeSelectionResizeHandle != null) {
         _resizeSelection(point, size);
+        _draggingSelection = true;
         _interactionChanged = true;
       } else if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
           _lastSelectPosition != null) {
@@ -3245,6 +3181,7 @@ class _EditorScreenState extends State<EditorScreen>
           final dx = point.x - _lastSelectPosition!.dx;
           final dy = point.y - _lastSelectPosition!.dy;
           _moveSelection(dx, dy);
+          _draggingSelection = true;
           _interactionChanged = true;
           _lastSelectPosition = Offset(point.x, point.y);
         } else {
@@ -3278,6 +3215,12 @@ class _EditorScreenState extends State<EditorScreen>
   }
 
   void _pointerUp(PointerEvent event, [Size? size]) {
+    if (_draggingSelection) {
+      // The selection toolbar is not built while a drag is in flight, so the
+      // drag never pays for re-laying it out every frame. Bring it back now
+      // that the selection has settled.
+      setState(() => _draggingSelection = false);
+    }
     if (event.kind == PointerDeviceKind.touch) {
       _touchPointers.remove(event.pointer);
     }
@@ -5897,7 +5840,8 @@ class _EditorScreenState extends State<EditorScreen>
                         ),
                       ),
                       if ((_tool == InkTool.lasso || _tool == InkTool.text) &&
-                          _hasSelection)
+                          _hasSelection &&
+                          !_draggingSelection)
                         Positioned.fill(
                           child: AnimatedBuilder(
                             animation: Listenable.merge([
@@ -5926,25 +5870,40 @@ class _EditorScreenState extends State<EditorScreen>
                                         (wide ? 8 : 58) +
                                         _toolbarDepthAt(ToolbarDock.bottom),
                                   ),
-                                  child: _SelectionActions(
-                                    hasSelection: true,
-                                    canPaste: _selectionClipboard.isNotEmpty,
-                                    onCut: _cutSelection,
-                                    onCopy: _copySelection,
-                                    onPaste: _pasteSelection,
-                                    onRemove: _removeSelection,
-                                    onResize: () =>
-                                        unawaited(_showSelectionResizeDialog()),
-                                    showEdit:
-                                        _tool == InkTool.text &&
-                                        _currentObjects.any(
-                                          (object) =>
-                                              object is InkText &&
-                                              object.isSelected,
-                                        ),
-                                    onEdit: () =>
-                                        unawaited(_editSelectedText()),
-                                    onColorPicker: _chooseSelectionColor,
+                                  // Fades in rather than popping back after
+                                  // a drag, since the toolbar is removed
+                                  // from the tree while dragging.
+                                  child: TweenAnimationBuilder<double>(
+                                    key: const ValueKey(
+                                      'selection-actions-fade',
+                                    ),
+                                    tween: Tween<double>(begin: 0, end: 1),
+                                    duration: const Duration(
+                                      milliseconds: 120,
+                                    ),
+                                    builder: (context, value, child) =>
+                                        Opacity(opacity: value, child: child),
+                                    child: _SelectionActions(
+                                      hasSelection: true,
+                                      canPaste:
+                                          _selectionClipboard.isNotEmpty,
+                                      onCut: _cutSelection,
+                                      onCopy: _copySelection,
+                                      onPaste: _pasteSelection,
+                                      onRemove: _removeSelection,
+                                      onSendToBack: _sendSelectionToBack,
+                                      onBringToFront: _bringSelectionToFront,
+                                      showEdit:
+                                          _tool == InkTool.text &&
+                                          _currentObjects.any(
+                                            (object) =>
+                                                object is InkText &&
+                                                object.isSelected,
+                                          ),
+                                      onEdit: () =>
+                                          unawaited(_editSelectedText()),
+                                      onColorPicker: _chooseSelectionColor,
+                                    ),
                                   ),
                                 );
                               },
@@ -6286,10 +6245,11 @@ class _SelectionActions extends StatelessWidget {
     required this.onCopy,
     required this.onPaste,
     required this.onRemove,
-    required this.onResize,
     required this.showEdit,
     required this.onEdit,
     required this.onColorPicker,
+    required this.onSendToBack,
+    required this.onBringToFront,
   });
 
   final bool hasSelection;
@@ -6298,10 +6258,11 @@ class _SelectionActions extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onPaste;
   final VoidCallback onRemove;
-  final VoidCallback onResize;
   final bool showEdit;
   final VoidCallback onEdit;
   final VoidCallback onColorPicker;
+  final VoidCallback onSendToBack;
+  final VoidCallback onBringToFront;
 
   @override
   Widget build(BuildContext context) {
@@ -6340,9 +6301,14 @@ class _SelectionActions extends StatelessWidget {
                   icon: const Icon(Icons.edit_note_rounded),
                 ),
               IconButton(
-                tooltip: 'Resize',
-                onPressed: hasSelection ? onResize : null,
-                icon: const Icon(Icons.aspect_ratio_rounded),
+                tooltip: 'Send to back',
+                onPressed: hasSelection ? onSendToBack : null,
+                icon: const Icon(Icons.flip_to_back_rounded),
+              ),
+              IconButton(
+                tooltip: 'Bring to front',
+                onPressed: hasSelection ? onBringToFront : null,
+                icon: const Icon(Icons.flip_to_front_rounded),
               ),
               IconButton(
                 tooltip: 'Cut',

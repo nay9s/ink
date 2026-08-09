@@ -184,4 +184,63 @@ void main() {
 
     expect(library.manageCalls, 1);
   });
+
+  testWidgets('header keeps the camera action clear of the title', (
+    tester,
+  ) async {
+    await openSheet(tester, _FakePhotoLibrary());
+
+    final title = tester.getRect(find.text('Images'));
+    final camera = tester.getRect(
+      find.byKey(const ValueKey('image-source-camera')),
+    );
+
+    // The header row used to collapse to the title's width, which pulled the
+    // right-aligned camera button straight over the title.
+    expect(camera.overlaps(title), isFalse);
+    expect(camera.left, greaterThanOrEqualTo(title.right));
+  });
+
+  testWidgets('sheet leaves the page visible and shows a 3-wide grid', (
+    tester,
+  ) async {
+    final library = _FakePhotoLibrary(
+      assets: List<PhotoLibraryAsset>.generate(
+        9,
+        (index) => PhotoLibraryAsset(id: 'photo-$index', source: '$index'),
+      ),
+    );
+    await openSheet(tester, library);
+
+    // Text outside a Material renders in Flutter's red-on-yellow "missing
+    // style" form, so the sheet must provide one.
+    expect(
+      find.ancestor(
+        of: find.text('Images'),
+        matching: find.byType(Material),
+      ),
+      findsWidgets,
+    );
+
+    final sheet = tester.getRect(find.byType(ImageSourceSheet));
+    const surface = Size(1024, 768);
+    expect(sheet.width, lessThan(surface.width * .45));
+    expect(sheet.height, lessThan(surface.height * .7));
+
+    // Three thumbnails per row.
+    final firstRowTop = tester
+        .getRect(find.byKey(const ValueKey('gallery-photo-0')))
+        .top;
+    final sameRow = <int>[
+      for (var index = 0; index < 9; index++)
+        if ((tester
+                    .getRect(find.byKey(ValueKey('gallery-photo-$index')))
+                    .top -
+                firstRowTop)
+            .abs() <
+            1)
+          index,
+    ];
+    expect(sameRow, <int>[0, 1, 2]);
+  });
 }
