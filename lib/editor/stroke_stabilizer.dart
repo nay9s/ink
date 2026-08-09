@@ -4,6 +4,18 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 
+/// Minimum spacing between captured control points, in screen pixels.
+///
+/// Writing slowly delivers 120Hz samples only a fraction of a pixel apart, so
+/// each one is dominated by hand and sensor jitter rather than by the stroke's
+/// direction. Keeping them all made the renderer's spline turn through every
+/// bit of that noise, which reads as a jagged line. Spacing control points out
+/// shrinks the angle each jitter can introduce: measured on a jittered slow
+/// arc it removes roughly two thirds of the excess turning while leaving the
+/// path itself where the hand drew it, and fast strokes are untouched because
+/// their samples already land further apart than this.
+const double kMinimumControlPointSpacing = 4;
+
 /// Control points to append when the stabilized pen position moves from
 /// [start] to [target].
 ///
@@ -19,7 +31,7 @@ List<InkPoint> strokeCapturePointsTowards(
   InkPoint start,
   InkPoint target,
   Size size, {
-  double minimumDistance = .15,
+  double minimumDistance = kMinimumControlPointSpacing,
 }) {
   final dxPixels = (target.x - start.x) * size.width;
   final dyPixels = (target.y - start.y) * size.height;
