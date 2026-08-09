@@ -1866,14 +1866,18 @@ class _EditorScreenState extends State<EditorScreen>
     _activeStrokeHasRawTip = true;
   }
 
-  void _appendPointTowards(InkPoint target, Size size) {
+  void _appendPointTowards(InkPoint target, Size screenSize) {
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.isEmpty) return;
 
-    // Only the real stabilized sample becomes a control point. See
-    // strokeCapturePointsTowards for why the gap must not be subdivided.
+    // Only the real stabilized sample becomes a control point, and only once
+    // it is far enough from the last one. See strokeCapturePointsTowards for
+    // why the gap must not be subdivided, and kMinimumControlPointSpacing for
+    // why near-duplicate samples are dropped. Measuring in screen pixels — as
+    // the stabilizer does — keeps the spacing feeling the same at every zoom
+    // level instead of getting denser as you zoom in.
     stroke.points.addAll(
-      strokeCapturePointsTowards(stroke.points.last, target, size),
+      strokeCapturePointsTowards(stroke.points.last, target, screenSize),
     );
   }
 
@@ -1896,7 +1900,7 @@ class _EditorScreenState extends State<EditorScreen>
             timestamp: event.timeStamp,
           )
         : raw;
-    _appendPointTowards(target, size);
+    _appendPointTowards(target, screenSize);
     _appendExactRawTip(raw, screenSize);
   }
 
