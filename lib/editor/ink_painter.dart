@@ -470,7 +470,12 @@ class InkPainter extends CustomPainter {
       final point = stroke.points.first;
       final radius = _pressureWidth(stroke, point.pressure, 0) / 2;
       paint.style = PaintingStyle.fill;
-      canvas.drawCircle(_offsetFor(point, rect), math.max(.75, radius), paint);
+      // Match the line thickness exactly. A floor here (it used to be .75)
+      // pinned the dot to ~1.5 units wide, so every pen-down flashed a dot up
+      // to 3x the pen width before the second point arrived — a stroke always
+      // has a single point for that first frame. Sub-pixel dots stay visible
+      // through antialiasing, and grow with the page like the line does.
+      canvas.drawCircle(_offsetFor(point, rect), math.max(radius, .01), paint);
       return;
     }
 
