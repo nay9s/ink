@@ -191,6 +191,12 @@ class _EditorScreenState extends State<EditorScreen>
   /// Set once hold-to-snap has replaced the live stroke with a recognised
   /// shape, after which the pen drags that shape instead of adding points.
   bool _shapeSnapPreview = false;
+
+  /// Where the pen was at the moment of the snap, and the shape point that
+  /// tracks it. The drag is applied as a delta between the two so the
+  /// recognised shape stays exactly where it was drawn until the hand moves.
+  InkPoint? _shapeSnapPointerOrigin;
+  InkPoint? _shapeSnapTrackedOrigin;
   final List<InkPoint> _lassoPath = [];
   final List<InkPoint> _selectionLassoPath = [];
   bool _selectionMoveMode = false;
@@ -1925,6 +1931,13 @@ class _EditorScreenState extends State<EditorScreen>
   /// slow drags still accumulate, restarts it.
   static const double _shapeAssistHoldSlack = 3;
 
+  /// How long the pen has to rest before the stroke snaps to a shape.
+  ///
+  /// A full second was long enough that the snap felt like it was not coming.
+  /// Half a second still clears an incidental pause, because the recogniser
+  /// has the final say: pausing mid-word leaves the handwriting alone.
+  static const Duration _shapeAssistHold = Duration(milliseconds: 500);
+
   void _restartLineAssistTimer([InkPoint? point, Size? size]) {
     if (!_settings.shapeAssist || !_canStraightenActiveStroke) {
       _cancelLineAssist();
@@ -1944,10 +1957,43 @@ class _EditorScreenState extends State<EditorScreen>
 
     _cancelLineAssist();
     _shapeAssistAnchor = point;
-    _lineAssistTimer = Timer(const Duration(milliseconds: 1000), () {
+    _lineAssistTimer = Timer(_shapeAssistHold, () {
       if (!mounted || !_canStraightenActiveStroke) return;
       setState(_snapActiveStrokeToShape);
     });
+  }
+
+  /// Orders a recognised shape's two stored points as `[anchor, tracked]`,
+  /// where `tracked` is the one that follows the pen afterwards.
+  ///
+  /// This has to depend on where the pen actually is. A closed shape is drawn
+  /// back round to where it started, so the pen finishes on the corner the
+  /// hand began from — but the recogniser always reports the bounding box as
+  /// `topLeft`..`bottomRight`. Treating `bottomRight` as the tracked point
+  /// regardless dragged the far corner onto the pen the instant the next
+  /// sample arrived, collapsing a box drawn anticlockwise from its top left
+  /// into a speck in that corner. Anchoring the corner diagonally opposite the
+  /// pen instead keeps the shape over what was drawn, whichever corner the
+  /// hand started from, and makes a later drag resize it from the corner the
+  /// hand is already resting on.
+  List<InkPoint> _orientSnappedShape(RecognizedShape shape, InkPoint pen) {
+    // An open stroke ends at the pen by definition, and extending it from
+    // there is the whole point of snapping a line.
+    if (shape.kind == InkShapeKind.line) {
+      return <InkPoint>[shape.start, shape.end];
+    }
+
+    final left = math.min(shape.start.x, shape.end.x);
+    final right = math.max(shape.start.x, shape.end.x);
+    final top = math.min(shape.start.y, shape.end.y);
+    final bottom = math.max(shape.start.y, shape.end.y);
+    final pressure = shape.start.pressure;
+    final nearLeft = (pen.x - left).abs() <= (pen.x - right).abs();
+    final nearTop = (pen.y - top).abs() <= (pen.y - bottom).abs();
+    return <InkPoint>[
+      InkPoint(nearLeft ? right : left, nearTop ? bottom : top, pressure),
+      InkPoint(nearLeft ? left : right, nearTop ? top : bottom, pressure),
+    ];
   }
 
   void _snapActiveStrokeToShape() {
@@ -1957,12 +2003,45 @@ class _EditorScreenState extends State<EditorScreen>
     // Nothing recognisable: leave the handwriting exactly as drawn. A pause
     // mid-word must not turn a letter into a box.
     if (shape == null) return;
+
+    // _appendExactRawTip keeps the true Pencil position as the final point,
+    // so this is where the hand is resting right now.
+    final pen = stroke.points.last;
+    final oriented = _orientSnappedShape(shape, pen);
     _activeStroke = stroke.copyWith(
-      points: <InkPoint>[shape.start, shape.end],
+      points: oriented,
       shapeKind: shape.kind,
     );
     _activeStrokeHasRawTip = false;
     _shapeSnapPreview = true;
+    _shapeSnapPointerOrigin = pen;
+    _shapeSnapTrackedOrigin = oriented.last;
+  }
+
+  /// Where a snapped shape's tracked point sits once the pen has reached
+  /// [pen].
+  ///
+  /// Following the pen's movement *since* the snap, rather than jumping the
+  /// point onto the pen, matters for closed shapes: the recognised corner is
+  /// an extreme of the whole stroke and sits a little away from wherever the
+  /// hand happened to stop, so assigning the pen position outright nudged the
+  /// shape on the very next sample. A line is unaffected either way, its
+  /// recognised endpoint being the last sample.
+  InkPoint _shapeSnapTrackedPoint(InkPoint pen) {
+    final origin = _shapeSnapPointerOrigin;
+    final tracked = _shapeSnapTrackedOrigin;
+    if (origin == null || tracked == null) return pen;
+    return InkPoint(
+      tracked.x + (pen.x - origin.x),
+      tracked.y + (pen.y - origin.y),
+      tracked.pressure,
+    );
+  }
+
+  void _clearShapeSnapPreview() {
+    _shapeSnapPreview = false;
+    _shapeSnapPointerOrigin = null;
+    _shapeSnapTrackedOrigin = null;
   }
 
   void _applyZoomAroundPoint({
@@ -2204,7 +2283,7 @@ class _EditorScreenState extends State<EditorScreen>
       _lastSelectPosition = null;
       _lassoPath.clear();
       _resetSelectionResize();
-      _shapeSnapPreview = false;
+      _clearShapeSnapPreview();
     });
   }
 
@@ -2340,7 +2419,7 @@ class _EditorScreenState extends State<EditorScreen>
         if (_usesStrokeStabilizer(_activeStroke!)) {
           _strokeStabilizer.start(point, timestamp: event.timeStamp);
         }
-        _shapeSnapPreview = false;
+        _clearShapeSnapPreview();
         _interactionChanged = true;
       }
     });
@@ -3260,7 +3339,10 @@ class _EditorScreenState extends State<EditorScreen>
       } else if (_activeStroke != null) {
         if (_shapeSnapPreview && _activeStroke!.points.length >= 2) {
           _activeStroke = _activeStroke!.copyWith(
-            points: [_activeStroke!.points.first, _point(event, size)],
+            points: [
+              _activeStroke!.points.first,
+              _shapeSnapTrackedPoint(_point(event, size)),
+            ],
           );
           _activeStrokeHasRawTip = false;
         } else {
@@ -3364,7 +3446,7 @@ class _EditorScreenState extends State<EditorScreen>
       _resetSelectionResize();
       if (_tool == InkTool.lasso) _lassoPath.clear();
       if (autoReturnToPen) _tool = _lastDrawingTool;
-      _shapeSnapPreview = false;
+      _clearShapeSnapPreview();
       _selectionPointerStartedInside = false;
     });
     _invalidatePdfrxInkOverlay();

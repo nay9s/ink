@@ -156,6 +156,16 @@ void main() {
       expect(recognizeShape(tick), isNull);
     });
 
+    test('a letter-sized downstroke stays freehand', () {
+      // Hold-to-snap fires on any pause, so this size floor is what stops a
+      // pause mid-word from turning the stem of an "h" into a snapped line
+      // and putting the editor into shape-drag mode. Normal handwriting runs
+      // about .015-.03 of page height per letter; recognition starts at .04.
+      final stem = _line(x1: .3, y1: .4, x2: .302, y2: .425, samples: 20);
+
+      expect(recognizeShape(stem), isNull);
+    });
+
     test('too few samples are ignored', () {
       expect(
         recognizeShape(<InkPoint>[
