@@ -1,4 +1,4 @@
-import 'dart:math' as math;
+﻿import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,53 +7,77 @@ import 'package:ink_note/editor/stroke_stabilizer.dart';
 import 'package:ink_note/models.dart';
 
 /// Writing slowly delivers 120Hz samples a fraction of a pixel apart, so each
-/// is dominated by jitter rather than by where the stroke is going. These
-/// tests pin the control-point spacing that keeps that noise out of the
-/// rendered curve.
+/// is dominated by tremor rather than by where the stroke is going. These
+/// tests pin how that noise is kept out of the rendered curve.
+///
+/// The glyph and tremor here are sized the way real handwriting is: letters a
+/// couple of hundred pixels tall with about a pixel of hand tremor. An earlier
+/// version of this file used a 900px stroke with 0.45px tremor, a 2000:1 ratio
+/// that made every option look smooth and hid the difference between them.
 void main() {
-  const canvas = Size(1000, 1000);
+  const canvas = Size(1500, 560);
+  const origin = Offset(400, 300);
+  const glyphScale = 130.0;
+  const tremorPx = 1.1;
 
-  // A gentle arc, the shape a letter is built from. It turns ~2.1 rad.
-  Offset truePathAt(double t) =>
-      Offset(200 + t * 300, 500 - math.sin(t * math.pi) * 120);
+  /// A bowl with an ascender loop, the shape most Thai letters are built
+  /// from: curvature the whole way round, which is where wobble shows up
+  /// first. It turns about 7.4 rad.
+  Offset glyphAt(double t) {
+    final angle = t * math.pi * 2.35 - math.pi * .55;
+    final radius = (1 - t * .22) * glyphScale;
+    return origin +
+        Offset(
+          math.cos(angle) * radius * .78 + t * glyphScale * .5,
+          math.sin(angle) * radius,
+        );
+  }
 
+  /// Runs the real capture pipeline over the glyph. With [average] the shipped
+  /// [StrokeControlPointSpacer] is used; without it, samples are simply
+  /// thinned to the same spacing, which is what the spacer replaced.
   List<InkPoint> capture({
-    required double sampleStepPx,
-    required double minimumDistance,
+    required double spacing,
+    required bool average,
     required int seed,
+    double sampleStepPx = .5,
   }) {
-    const arcLength = 340.0;
-    final sampleCount = (arcLength / sampleStepPx).round();
+    final sampleCount = (glyphScale * 9 / sampleStepPx).round();
     final random = math.Random(seed);
     final stabilizer = StrokeStabilizer();
+    final spacer = StrokeControlPointSpacer(spanPixels: spacing);
     final captured = <InkPoint>[];
 
     for (var i = 0; i <= sampleCount; i++) {
-      final ideal = truePathAt(i / sampleCount);
+      final ideal = glyphAt(i / sampleCount);
       final raw = InkPoint(
-        (ideal.dx + (random.nextDouble() * 2 - 1) * .4) / canvas.width,
-        (ideal.dy + (random.nextDouble() * 2 - 1) * .4) / canvas.height,
+        (ideal.dx + (random.nextDouble() * 2 - 1) * tremorPx) / canvas.width,
+        (ideal.dy + (random.nextDouble() * 2 - 1) * tremorPx) / canvas.height,
         .5,
       );
       final timestamp = Duration(milliseconds: i * 8);
       if (i == 0) {
         stabilizer.start(raw, timestamp: timestamp);
+        spacer.start(raw);
         captured.add(raw);
         continue;
       }
-      captured.addAll(
-        strokeCapturePointsTowards(
-          captured.last,
-          stabilizer.filter(
-            raw,
-            canvas,
-            strength: .45,
-            timestamp: timestamp,
-          ),
-          canvas,
-          minimumDistance: minimumDistance,
-        ),
+      // The shipped default smoothing.
+      final filtered = stabilizer.filter(
+        raw,
+        canvas,
+        strength: .45,
+        timestamp: timestamp,
       );
+      if (average) {
+        final point = spacer.add(filtered, canvas);
+        if (point != null) captured.add(point);
+        continue;
+      }
+      final previous = captured.last;
+      final dx = (filtered.x - previous.x) * canvas.width;
+      final dy = (filtered.y - previous.y) * canvas.height;
+      if (math.sqrt(dx * dx + dy * dy) >= spacing) captured.add(filtered);
     }
     return captured;
   }
@@ -72,9 +96,9 @@ void main() {
         maximumSegmentLength: .5,
       );
 
-  /// Total turning of the rendered centerline, resampled at a fixed spacing so
-  /// dense and sparse inputs are measured alike. Anything above the arc's own
-  /// ~2.1 rad is wobble.
+  /// Total turning of the rendered centerline, walked at a fixed spacing so
+  /// dense and sparse inputs are measured alike. Anything above the glyph's
+  /// own ~7.4 rad is wobble.
   double totalTurning(List<InkPoint> captured) {
     final walk = <Offset>[];
     for (final sample in render(captured)) {
@@ -98,12 +122,12 @@ void main() {
     return turning;
   }
 
-  double furthestFromTruePath(List<InkPoint> captured) {
+  double furthestFromGlyph(List<InkPoint> captured) {
     var worst = 0.0;
     for (final sample in render(captured)) {
       var nearest = double.infinity;
-      for (var step = 0; step <= 300; step++) {
-        final distance = (sample.offset - truePathAt(step / 300)).distance;
+      for (var step = 0; step <= 600; step++) {
+        final distance = (sample.offset - glyphAt(step / 600)).distance;
         if (distance < nearest) nearest = distance;
       }
       if (nearest > worst) worst = nearest;
@@ -113,72 +137,132 @@ void main() {
 
   double averageOver(
     double Function(List<InkPoint>) measure, {
-    required double sampleStepPx,
-    required double minimumDistance,
+    required double spacing,
+    required bool average,
+    double sampleStepPx = .5,
   }) {
-    const runs = 8;
+    const runs = 6;
     var total = 0.0;
     for (var seed = 0; seed < runs; seed++) {
       total += measure(
         capture(
-          sampleStepPx: sampleStepPx,
-          minimumDistance: minimumDistance,
+          spacing: spacing,
+          average: average,
           seed: seed,
+          sampleStepPx: sampleStepPx,
         ),
       );
     }
     return total / runs;
   }
 
-  // The spacing capture actually ships with, versus keeping every sample.
-  const shipped = kMinimumControlPointSpacing;
-  const everySample = .15;
+  const shipped = kControlPointSpanPixels;
 
-  test('the shipped spacing removes most of the slow-writing wobble', () {
-    final dense = averageOver(
+  test('averaging a span beats thinning it, at the same point count', () {
+    final thinned = averageOver(
       totalTurning,
-      sampleStepPx: .5,
-      minimumDistance: everySample,
+      spacing: shipped,
+      average: false,
     );
-    final spaced = averageOver(
+    final averaged = averageOver(
       totalTurning,
-      sampleStepPx: .5,
-      minimumDistance: shipped,
+      spacing: shipped,
+      average: true,
     );
 
-    expect(dense, greaterThan(12));
-    expect(spaced, lessThan(dense * .55));
+    // Both store one point per span, so this is not a density effect: the
+    // mean of a span's samples simply carries less of their tremor.
+    expect(
+      capture(spacing: shipped, average: true, seed: 0).length,
+      closeTo(capture(spacing: shipped, average: false, seed: 0).length, 6),
+    );
+    expect(averaged, lessThan(thinned * .6));
   });
 
-  test('spacing does not pull the line off the path the hand drew', () {
-    final dense = averageOver(
-      furthestFromTruePath,
-      sampleStepPx: .5,
-      minimumDistance: everySample,
+  test('averaging removes most of the slow-writing wobble', () {
+    final everySample = averageOver(
+      totalTurning,
+      spacing: .15,
+      average: false,
     );
-    final spaced = averageOver(
-      furthestFromTruePath,
-      sampleStepPx: .5,
-      minimumDistance: shipped,
+    final averaged = averageOver(
+      totalTurning,
+      spacing: shipped,
+      average: true,
     );
 
-    // Noise is dropped, not the trajectory: fidelity must not get worse.
-    expect(spaced, lessThan(dense + .1));
+    expect(everySample, greaterThan(60));
+    expect(averaged, lessThan(everySample * .25));
   });
 
-  test('fast strokes are left alone', () {
-    // Samples already further apart than the minimum, so nothing is dropped.
-    final dense = averageOver(
-      totalTurning,
-      sampleStepPx: 6,
-      minimumDistance: everySample,
+  test('averaging does not pull the line off the path the hand drew', () {
+    final everySample = averageOver(
+      furthestFromGlyph,
+      spacing: .15,
+      average: false,
     );
-    final spaced = averageOver(
-      totalTurning,
-      sampleStepPx: 6,
-      minimumDistance: shipped,
+    final averaged = averageOver(
+      furthestFromGlyph,
+      spacing: shipped,
+      average: true,
     );
 
-    expect(spaced, closeTo(dense, dense * .15));
+    // Noise is cancelled, not traded for drift: fidelity must not get worse.
+    expect(averaged, lessThan(everySample + .02));
+  });
+
+  test('fast strokes are not degraded', () {
+    // Samples already arrive further apart than a span, so nearly every span
+    // holds a single sample whose mean is itself. Only where the stabilizer
+    // is still catching up early in the stroke does a span hold two, so this
+    // asserts the outcome rather than byte-identical points.
+    const fast = 12.0;
+    final captured = capture(
+      spacing: shipped,
+      average: true,
+      seed: 0,
+      sampleStepPx: fast,
+    );
+    final thinned = capture(
+      spacing: shipped,
+      average: false,
+      seed: 0,
+      sampleStepPx: fast,
+    );
+
+    expect(captured.length, closeTo(thinned.length, 2));
+    expect(
+      averageOver(
+        totalTurning,
+        spacing: shipped,
+        average: true,
+        sampleStepPx: fast,
+      ),
+      lessThanOrEqualTo(
+        averageOver(
+          totalTurning,
+          spacing: shipped,
+          average: false,
+          sampleStepPx: fast,
+        ),
+      ),
+    );
+    expect(
+      averageOver(
+        furthestFromGlyph,
+        spacing: shipped,
+        average: true,
+        sampleStepPx: fast,
+      ),
+      lessThan(
+        averageOver(
+              furthestFromGlyph,
+              spacing: shipped,
+              average: false,
+              sampleStepPx: fast,
+            ) +
+            .02,
+      ),
+    );
   });
 }
