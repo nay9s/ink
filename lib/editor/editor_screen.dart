@@ -33,6 +33,7 @@ import 'pdf_vector_exporter.dart';
 import 'pdf_zoom_out_size_delegate.dart';
 import 'selection_toolbar_layout.dart';
 import 'selection_transform.dart';
+import 'shape_recognizer.dart';
 import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
 import 'toolbar_docking.dart';
@@ -183,7 +184,9 @@ class _EditorScreenState extends State<EditorScreen>
   int _primaryToolbarOrder = 0;
   ToolbarDock _optionsToolbarDock = ToolbarDock.top;
   int _optionsToolbarOrder = 1;
-  bool _straightLinePreview = false;
+  /// Set once hold-to-snap has replaced the live stroke with a recognised
+  /// shape, after which the pen drags that shape instead of adding points.
+  bool _shapeSnapPreview = false;
   final List<InkPoint> _lassoPath = [];
   final List<InkPoint> _selectionLassoPath = [];
   bool _selectionMoveMode = false;
@@ -1655,6 +1658,31 @@ class _EditorScreenState extends State<EditorScreen>
                                       },
                                     ),
                                   ],
+                                  SwitchListTile.adaptive(
+                                    contentPadding: EdgeInsets.zero,
+                                    dense: true,
+                                    title: const Text(
+                                      'Snap to shapes',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    subtitle: const Text(
+                                      'Hold the pen still for a second to turn '
+                                      'what you drew into a straight line, '
+                                      'rectangle or ellipse.',
+                                      style: TextStyle(fontSize: 11),
+                                    ),
+                                    value: _settings.shapeAssist,
+                                    onChanged: (value) {
+                                      final updated = _settings.copyWith(
+                                        shapeAssist: value,
+                                      );
+                                      setState(() => _settings = updated);
+                                      setDialogState(() {});
+                                      unawaited(AppSettingsStore.save(updated));
+                                    },
+                                  ),
                                   const SizedBox(height: 4),
                                   Row(
                                     children: [
@@ -1883,24 +1911,28 @@ class _EditorScreenState extends State<EditorScreen>
 
   void _restartLineAssistTimer() {
     _cancelLineAssist();
-    if (!_canStraightenActiveStroke) return;
-    _lineAssistTimer = Timer(const Duration(milliseconds: 1500), () {
+    if (!_settings.shapeAssist || !_canStraightenActiveStroke) return;
+    // Restarted on every sample, so this only elapses while the pen is held
+    // still — that pause is the gesture that asks for a shape.
+    _lineAssistTimer = Timer(const Duration(milliseconds: 1000), () {
       if (!mounted || !_canStraightenActiveStroke) return;
-      setState(_straightenActiveStroke);
+      setState(_snapActiveStrokeToShape);
     });
   }
 
-  void _straightenActiveStroke() {
+  void _snapActiveStrokeToShape() {
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.length < 2) return;
+    final shape = recognizeShape(stroke.points);
+    // Nothing recognisable: leave the handwriting exactly as drawn. A pause
+    // mid-word must not turn a letter into a box.
+    if (shape == null) return;
     _activeStroke = stroke.copyWith(
-      points: [
-        stroke.points.first,
-        _strokeStabilizer.lastRawPoint ?? stroke.points.last,
-      ],
+      points: <InkPoint>[shape.start, shape.end],
+      shapeKind: shape.kind,
     );
     _activeStrokeHasRawTip = false;
-    _straightLinePreview = true;
+    _shapeSnapPreview = true;
   }
 
   void _applyZoomAroundPoint({
@@ -2142,7 +2174,7 @@ class _EditorScreenState extends State<EditorScreen>
       _lastSelectPosition = null;
       _lassoPath.clear();
       _resetSelectionResize();
-      _straightLinePreview = false;
+      _shapeSnapPreview = false;
     });
   }
 
@@ -2278,7 +2310,7 @@ class _EditorScreenState extends State<EditorScreen>
         if (_usesStrokeStabilizer(_activeStroke!)) {
           _strokeStabilizer.start(point, timestamp: event.timeStamp);
         }
-        _straightLinePreview = false;
+        _shapeSnapPreview = false;
         _interactionChanged = true;
       }
     });
@@ -3196,7 +3228,7 @@ class _EditorScreenState extends State<EditorScreen>
         _eraserCursor = point;
         _interactionChanged = erased || _interactionChanged;
       } else if (_activeStroke != null) {
-        if (_straightLinePreview && _activeStroke!.points.length >= 2) {
+        if (_shapeSnapPreview && _activeStroke!.points.length >= 2) {
           _activeStroke = _activeStroke!.copyWith(
             points: [_activeStroke!.points.first, _point(event, size)],
           );
@@ -3249,7 +3281,7 @@ class _EditorScreenState extends State<EditorScreen>
     if (finishingStroke != null &&
         size != null &&
         event is! PointerCancelEvent &&
-        !_straightLinePreview &&
+        !_shapeSnapPreview &&
         _usesStrokeStabilizer(finishingStroke)) {
       final raw = _point(event, size);
       final screenSize = _stabilizerScreenSize(size);
@@ -3302,7 +3334,7 @@ class _EditorScreenState extends State<EditorScreen>
       _resetSelectionResize();
       if (_tool == InkTool.lasso) _lassoPath.clear();
       if (autoReturnToPen) _tool = _lastDrawingTool;
-      _straightLinePreview = false;
+      _shapeSnapPreview = false;
       _selectionPointerStartedInside = false;
     });
     _invalidatePdfrxInkOverlay();

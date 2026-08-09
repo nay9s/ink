@@ -154,7 +154,9 @@ class PdfVectorExporter {
       return false;
     }
 
-    final samples = stroke.tool == InkTool.shape
+    final drawsAsShape =
+        stroke.shapeKind != InkShapeKind.none || stroke.tool == InkTool.shape;
+    final samples = drawsAsShape
         ? _shapeSamples(stroke, mapper)
         : _filteredSamples(stroke, mapper);
     if (samples.isEmpty) return false;
@@ -163,7 +165,7 @@ class PdfVectorExporter {
     final hasVariableWidth =
         samples.length > 1 &&
         ((stroke.dashed &&
-                stroke.tool != InkTool.shape &&
+                !drawsAsShape &&
                 stroke.tool != InkTool.highlighter) ||
             stroke.tool == InkTool.fountainPen ||
             stroke.tool == InkTool.brushPen);
@@ -233,14 +235,67 @@ class PdfVectorExporter {
     InkStroke stroke,
     PdfPageCoordinateMapper mapper,
   ) {
-    final points = stroke.points.length == 1
-        ? <InkPoint>[stroke.points.first]
-        : <InkPoint>[stroke.points.first, stroke.points.last];
+    if (stroke.points.length == 1) {
+      final point = stroke.points.first;
+      final mapped = mapper.fromNormalized(point.x, point.y);
+      return <_PdfInkSample>[
+        _PdfInkSample(mapped.$1, mapped.$2, point.pressure),
+      ];
+    }
+
+    final first = stroke.points.first;
+    final last = stroke.points.last;
+    final pressure = first.pressure;
+    final left = math.min(first.x, last.x);
+    final right = math.max(first.x, last.x);
+    final top = math.min(first.y, last.y);
+    final bottom = math.max(first.y, last.y);
+
+    // Traced as closed outlines so the exported PDF matches what the painter
+    // draws with drawRect / drawOval rather than a single edge.
+    final normalized = switch (stroke.shapeKind) {
+      InkShapeKind.rectangle => <(double, double)>[
+        (left, top),
+        (right, top),
+        (right, bottom),
+        (left, bottom),
+        (left, top),
+      ],
+      InkShapeKind.ellipse => _ellipseOutline(left, top, right, bottom),
+      InkShapeKind.line || InkShapeKind.none => <(double, double)>[
+        (first.x, first.y),
+        (last.x, last.y),
+      ],
+    };
+
     return <_PdfInkSample>[
-      for (final point in points)
+      for (final (x, y) in normalized)
         () {
-          final mapped = mapper.fromNormalized(point.x, point.y);
-          return _PdfInkSample(mapped.$1, mapped.$2, point.pressure);
+          final mapped = mapper.fromNormalized(x, y);
+          return _PdfInkSample(mapped.$1, mapped.$2, pressure);
+        }(),
+    ];
+  }
+
+  static List<(double, double)> _ellipseOutline(
+    double left,
+    double top,
+    double right,
+    double bottom,
+  ) {
+    const segments = 72;
+    final centerX = (left + right) / 2;
+    final centerY = (top + bottom) / 2;
+    final radiusX = (right - left) / 2;
+    final radiusY = (bottom - top) / 2;
+    return <(double, double)>[
+      for (var index = 0; index <= segments; index++)
+        () {
+          final angle = index / segments * 2 * math.pi;
+          return (
+            centerX + math.cos(angle) * radiusX,
+            centerY + math.sin(angle) * radiusY,
+          );
         }(),
     ];
   }
@@ -298,6 +353,10 @@ class PdfVectorExporter {
             .clamp(.08, 1.0)
             .toDouble();
     final baseWidth = stroke.width * pageScale;
+
+    // The painter strokes shape outlines at a constant stroke.width, so the
+    // per-tool pressure tapering below must not apply to them.
+    if (stroke.shapeKind != InkShapeKind.none) return baseWidth;
 
     return switch (stroke.tool) {
       InkTool.fountainPen =>

@@ -37,4 +37,50 @@ void main() {
 
     expect(restored.geometryVersion, 1);
   });
+
+  test('a snapped shape survives a save and reload', () {
+    final stroke = InkStroke(
+      tool: InkTool.pen,
+      color: Colors.black,
+      width: 2,
+      shapeKind: InkShapeKind.rectangle,
+      points: const <InkPoint>[InkPoint(.1, .2, .5), InkPoint(.6, .7, .5)],
+    );
+
+    final restored = InkStroke.fromJson(
+      Map<String, dynamic>.from(stroke.toJson()),
+    );
+
+    expect(restored.shapeKind, InkShapeKind.rectangle);
+    expect(restored.points.first.x, .1);
+    expect(restored.points.last.y, .7);
+  });
+
+  test('strokes saved before shape snapping stay freehand', () {
+    final restored = InkStroke.fromJson(<String, dynamic>{
+      'type': 'stroke',
+      'tool': 'pen',
+      'color': 0xFF000000,
+      'width': 2.0,
+      'points': <Map<String, Object>>[
+        <String, Object>{'x': .1, 'y': .2, 'p': .5},
+        <String, Object>{'x': .3, 'y': .4, 'p': .5},
+      ],
+    });
+
+    expect(restored.shapeKind, InkShapeKind.none);
+  });
+
+  test('shape assist defaults on and round-trips', () {
+    const settings = AppSettings();
+    expect(settings.shapeAssist, isTrue);
+
+    final restored = AppSettings.fromJson(
+      Map<String, dynamic>.from(settings.copyWith(shapeAssist: false).toJson()),
+    );
+    expect(restored.shapeAssist, isFalse);
+
+    // Settings written before the toggle existed opt in by default.
+    expect(AppSettings.fromJson(<String, dynamic>{}).shapeAssist, isTrue);
+  });
 }
