@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models.dart';
+import 'selection_transform.dart';
 import 'stroke_geometry.dart';
 
 class InkPainter extends CustomPainter {
@@ -61,7 +62,7 @@ class InkPainter extends CustomPainter {
     }
     if (currentActive is InkStroke &&
         currentActive.tool == InkTool.highlighter) {
-      _paintStroke(canvas, rect, currentActive, isActive: true);
+      _paintStroke(canvas, rect, currentActive);
     }
 
     for (final object in strokes) {
@@ -75,7 +76,7 @@ class InkPainter extends CustomPainter {
     }
     if (currentActive is InkStroke &&
         currentActive.tool != InkTool.highlighter) {
-      _paintStroke(canvas, rect, currentActive, isActive: true);
+      _paintStroke(canvas, rect, currentActive);
     } else if (currentActive is InkText) {
       _paintText(canvas, rect, currentActive);
     }
@@ -210,6 +211,19 @@ class InkPainter extends CustomPainter {
       dashLength: _lassoDashLength * _scale,
       gapLength: _lassoGapLength * _scale,
     );
+
+    final normalizedBounds = inkPointBounds(selectionPath);
+    if (normalizedBounds != null) {
+      _drawResizeHandles(
+        canvas,
+        Rect.fromLTRB(
+          rect.left + normalizedBounds.left * rect.width,
+          rect.top + normalizedBounds.top * rect.height,
+          rect.left + normalizedBounds.right * rect.width,
+          rect.top + normalizedBounds.bottom * rect.height,
+        ),
+      );
+    }
   }
 
   void _drawSelectionBox(Canvas canvas, Rect rect) {
@@ -261,6 +275,10 @@ class InkPainter extends CustomPainter {
       ..strokeWidth = 2 * _scale;
     canvas.drawRect(selectionRect, paint);
 
+    _drawResizeHandles(canvas, selectionRect);
+  }
+
+  void _drawResizeHandles(Canvas canvas, Rect selectionRect) {
     final handlePaint = Paint()
       ..isAntiAlias = true
       ..color = Colors.white;
@@ -270,12 +288,8 @@ class InkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2 * _scale;
     final handleRadius = 6 * _scale;
-    for (final point in [
-      selectionRect.topLeft,
-      selectionRect.topRight,
-      selectionRect.bottomLeft,
-      selectionRect.bottomRight,
-    ]) {
+    for (final handle in SelectionResizeHandle.values) {
+      final point = selectionResizeHandlePosition(selectionRect, handle);
       canvas.drawCircle(point, handleRadius, handlePaint);
       canvas.drawCircle(point, handleRadius, handleBorder);
     }
@@ -335,15 +349,6 @@ class InkPainter extends CustomPainter {
     // every zoom level instead of revealing new corners when enlarged.
     sampleSpacing: 3 * _geometryUnit(rect),
   );
-
-  List<StrokeGeometrySample> _liveRenderPoints(InkStroke stroke, Rect rect) =>
-      prepareLiveStrokeSamples(
-        stroke.points.map(
-          (point) =>
-              StrokeGeometrySample(_offsetFor(point, rect), point.pressure),
-        ),
-        minimumDistance: .05 * _geometryUnit(rect),
-      );
 
   List<StrokeGeometrySample> _interpolatedPoints(
     List<StrokeGeometrySample> source,
@@ -407,12 +412,7 @@ class InkPainter extends CustomPainter {
     canvas.drawCircle(points.last.offset, widths.last / 2, fill);
   }
 
-  void _paintStroke(
-    Canvas canvas,
-    Rect rect,
-    InkStroke stroke, {
-    bool isActive = false,
-  }) {
+  void _paintStroke(Canvas canvas, Rect rect, InkStroke stroke) {
     if (stroke.points.isEmpty) return;
 
     final paint = Paint()
@@ -449,12 +449,10 @@ class InkPainter extends CustomPainter {
       return;
     }
 
-    final centerPoints = isActive
-        ? _liveRenderPoints(stroke, rect)
-        : _filteredRenderPoints(stroke, rect);
+    final centerPoints = _filteredRenderPoints(stroke, rect);
+    final renderPoints = _interpolatedPoints(centerPoints, rect);
 
     if (stroke.dashed) {
-      final renderPoints = _interpolatedPoints(centerPoints, rect);
       var dashPhase = 0.0;
       for (var index = 0; index < renderPoints.length - 1; index++) {
         final first = renderPoints[index];
@@ -477,19 +475,18 @@ class InkPainter extends CustomPainter {
     }
 
     if (stroke.tool == InkTool.fountainPen || stroke.tool == InkTool.brushPen) {
-      final renderPoints = _interpolatedPoints(centerPoints, rect);
       _drawVariableStroke(canvas, stroke, renderPoints, paint);
       return;
     }
 
     final averagePressure =
-        centerPoints
+        renderPoints
             .map((point) => point.pressure)
             .fold<double>(0, (sum, pressure) => sum + pressure) /
-        centerPoints.length;
+        renderPoints.length;
     paint.strokeWidth = _pressureWidth(stroke, averagePressure, .5);
     canvas.drawPath(
-      (isActive ? createIncrementalStrokePath : createSmoothStrokePath)(
+      createSmoothStrokePath(
         centerPoints.map((point) => point.offset).toList(growable: false),
       ),
       paint,

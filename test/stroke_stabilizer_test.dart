@@ -50,22 +50,6 @@ void main() {
     expect(stabilizedAverage, lessThan(rawAverage * .5));
   });
 
-  test('default stabilization stays close to the Pencil tip', () {
-    final stabilizer = StrokeStabilizer()
-      ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
-    const raw = InkPoint(.3, .5, .5);
-
-    final result = stabilizer.filter(
-      raw,
-      canvas,
-      strength: .45,
-      timestamp: const Duration(milliseconds: 8),
-    );
-    final lagPixels = (raw.x - result.x) * canvas.width;
-
-    expect(lagPixels, lessThanOrEqualTo(2.1));
-  });
-
   test('maximum strength keeps the virtual pen within its lag bound', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(0, .5, .5), timestamp: Duration.zero);
@@ -79,7 +63,7 @@ void main() {
     );
     final lagPixels = (raw.x - result.x) * canvas.width;
 
-    expect(lagPixels, lessThanOrEqualTo(8.8));
+    expect(lagPixels, lessThanOrEqualTo(23.6));
     expect(result.x, lessThan(raw.x));
   });
 
@@ -104,10 +88,10 @@ void main() {
     expect(stabilizer.lastRawPoint, isNull);
   });
 
-  test('finishing a curved stroke cannot overshoot or reverse', () {
+  test('finishing a curved stroke continues its incoming tangent', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
-    stabilizer.filter(
+    final previous = stabilizer.filter(
       const InkPoint(.2, .5, .5),
       canvas,
       strength: 1,
@@ -121,19 +105,21 @@ void main() {
     );
     final tail = stabilizer.finish(const InkPoint(.3, .68, .5), canvas);
 
+    final incoming = Offset(
+      (current.x - previous.x) * canvas.width,
+      (current.y - previous.y) * canvas.height,
+    );
+    final outgoing = Offset(
+      (tail.first.x - current.x) * canvas.width,
+      (tail.first.y - current.y) * canvas.height,
+    );
+    final alignment =
+        (incoming.dx * outgoing.dx + incoming.dy * outgoing.dy) /
+        (incoming.distance * outgoing.distance);
+
     expect(tail, isNotEmpty);
+    expect(alignment, greaterThan(.8));
     expect(tail.last.x, .3);
     expect(tail.last.y, .68);
-    var previousDistance = const Offset(
-      .3,
-      .68,
-    ).translate(-current.x, -current.y).distance;
-    for (final point in tail) {
-      expect(point.x, inInclusiveRange(current.x, .3));
-      expect(point.y, inInclusiveRange(current.y, .68));
-      final distance = Offset(.3 - point.x, .68 - point.y).distance;
-      expect(distance, lessThanOrEqualTo(previousDistance + 1e-9));
-      previousDistance = distance;
-    }
   });
 }

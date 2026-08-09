@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../models.dart';
@@ -652,6 +653,7 @@ class _ToolbarDragHandle extends StatelessWidget {
     message: '$label — drag to move',
     child: GestureDetector(
       behavior: HitTestBehavior.opaque,
+      dragStartBehavior: DragStartBehavior.down,
       onPanStart: callbacks.onStart == null
           ? null
           : (details) => callbacks.onStart!(details.globalPosition),

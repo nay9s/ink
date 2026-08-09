@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_note/editor/toolbar_docking.dart';
@@ -21,6 +22,26 @@ void main() {
     expect(
       nearestToolbarDock(const Offset(500, 692), viewport),
       ToolbarDock.bottom,
+    );
+  });
+
+  test('dock hysteresis prevents edge flicker near a diagonal boundary', () {
+    const viewport = Size(1000, 600);
+    expect(
+      toolbarDockWithHysteresis(
+        position: const Offset(925, 100),
+        viewport: viewport,
+        currentDock: ToolbarDock.top,
+      ),
+      ToolbarDock.top,
+    );
+    expect(
+      toolbarDockWithHysteresis(
+        position: const Offset(975, 120),
+        viewport: viewport,
+        currentDock: ToolbarDock.top,
+      ),
+      ToolbarDock.right,
     );
   });
 
@@ -136,6 +157,7 @@ void main() {
     ) => GestureDetector(
       key: callbacks.enabled ? ValueKey('${kind.name}-test-handle') : null,
       behavior: HitTestBehavior.opaque,
+      dragStartBehavior: DragStartBehavior.down,
       onPanStart: callbacks.onStart == null
           ? null
           : (details) => callbacks.onStart!(details.globalPosition),
@@ -198,5 +220,74 @@ void main() {
       tester.getCenter(find.byKey(const ValueKey('options-toolbar'))).dy,
       lessThan(60),
     );
+  });
+
+  testWidgets('drag feedback keeps the original finger grab offset', (
+    tester,
+  ) async {
+    Widget toolbarBuilder(
+      EditorToolbarKind kind,
+      Axis axis,
+      ToolbarDragCallbacks callbacks,
+    ) => GestureDetector(
+      key: callbacks.enabled ? ValueKey('${kind.name}-smooth-handle') : null,
+      behavior: HitTestBehavior.opaque,
+      dragStartBehavior: DragStartBehavior.down,
+      onPanStart: callbacks.onStart == null
+          ? null
+          : (details) => callbacks.onStart!(details.globalPosition),
+      onPanUpdate: callbacks.onUpdate == null
+          ? null
+          : (details) => callbacks.onUpdate!(details.globalPosition),
+      onPanEnd: callbacks.onEnd == null ? null : (_) => callbacks.onEnd!(),
+      onPanCancel: callbacks.onCancel,
+      child: SizedBox(
+        width: axis == Axis.horizontal ? 180 : 44,
+        height: axis == Axis.horizontal ? 44 : 180,
+        child: const ColoredBox(color: Colors.blue),
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DockableEditorToolbars(
+            primary: primary,
+            options: options,
+            primaryBuilder: (context, axis, callbacks) =>
+                toolbarBuilder(EditorToolbarKind.primary, axis, callbacks),
+            optionsBuilder: (context, axis, callbacks) =>
+                toolbarBuilder(EditorToolbarKind.options, axis, callbacks),
+            onChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    final handle = find.byKey(const ValueKey('primary-smooth-handle'));
+    final originalRect = tester.getRect(handle);
+    final down = originalRect.topRight + const Offset(-10, 10);
+    final gesture = await tester.startGesture(down);
+    const dragDelta = Offset(-36, 34);
+    await gesture.moveTo(down + dragDelta);
+    await tester.pump();
+
+    final feedback = find.byKey(
+      const ValueKey('primary-toolbar-drag-feedback'),
+    );
+    expect(feedback, findsOneWidget);
+    final feedbackRect = tester.getRect(feedback);
+    expect(feedbackRect.size, originalRect.size);
+    expect(
+      (feedbackRect.topLeft - (originalRect.topLeft + dragDelta)).distance,
+      lessThan(1),
+    );
+
+    await gesture.moveTo(const Offset(760, 300));
+    await tester.pump();
+    expect(tester.getSize(feedback), originalRect.size);
+
+    await gesture.cancel();
+    await tester.pump();
   });
 }
