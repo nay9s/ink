@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -130,25 +131,43 @@ class PageStrip extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: GridView.builder(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                childAspectRatio: .58,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 12,
-              ),
-              itemCount: pages.length,
-              itemBuilder: (context, index) {
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // The tile height has to follow the pages' own shape. A fixed
+                // portrait aspect ratio left landscape thumbnails stranded at
+                // the top of a tall cell with a wide empty gap above the page
+                // number. The grid can only use one ratio for every tile, so
+                // size it to the tallest page and let shorter ones centre.
+                const horizontalPadding = 20.0;
+                const crossAxisSpacing = 10.0;
+                const labelExtent = 20.0;
+                final tileWidth =
+                    (constraints.maxWidth - horizontalPadding - crossAxisSpacing) /
+                    2;
+                var tallestRatio = .0;
+                for (var index = 0; index < pages.length; index++) {
+                  tallestRatio = math.max(
+                    tallestRatio,
+                    _resolvedPageRatio(index),
+                  );
+                }
+                if (tallestRatio <= 0) tallestRatio = 1.35;
+                final tileHeight = tileWidth * tallestRatio + labelExtent;
+
+                return GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    childAspectRatio: tileHeight <= 0
+                        ? .58
+                        : tileWidth / tileHeight,
+                    crossAxisSpacing: crossAxisSpacing,
+                    mainAxisSpacing: 12,
+                  ),
+                  itemCount: pages.length,
+                  itemBuilder: (context, index) {
                 final selected = index == currentPageIndex;
-                final savedRatio = index < pageAspectRatios.length
-                    ? pageAspectRatios[index]
-                    : null;
-                final pageRatio = savedRatio != null &&
-                        savedRatio.isFinite &&
-                        savedRatio > .15
-                    ? savedRatio.clamp(.15, 6.0).toDouble()
-                    : 1.35;
+                final pageRatio = _resolvedPageRatio(index);
                 return InkWell(
                   onTap: () => onSelectPage(index),
                   borderRadius: BorderRadius.circular(10),
@@ -156,7 +175,7 @@ class PageStrip extends StatelessWidget {
                     children: [
                       Expanded(
                         child: Align(
-                          alignment: Alignment.topCenter,
+                          alignment: Alignment.center,
                           child: AspectRatio(
                             aspectRatio: 1 / pageRatio,
                             child: AnimatedContainer(
@@ -234,6 +253,8 @@ class PageStrip extends StatelessWidget {
                     ],
                   ),
                 );
+                  },
+                );
               },
             ),
           ),
@@ -242,6 +263,15 @@ class PageStrip extends StatelessWidget {
     );
   }
 
+  /// Height-to-width ratio of page [index], falling back to a portrait
+  /// default when the page has not been measured yet.
+  double _resolvedPageRatio(int index) {
+    final saved = index < pageAspectRatios.length
+        ? pageAspectRatios[index]
+        : null;
+    if (saved == null || !saved.isFinite || saved <= .15) return 1.35;
+    return saved.clamp(.15, 6.0).toDouble();
+  }
 }
 
 class CompactPageBar extends StatelessWidget {
