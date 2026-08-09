@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -116,5 +117,65 @@ void main() {
     }
 
     expect(await render(active: true), await render(active: false));
+  });
+
+  test('pen-down dot is never fatter than the line it starts', () async {
+    const size = Size(120, 120);
+
+    // Summed per-pixel darkness == painted area in square pixels, which stays
+    // meaningful for sub-pixel shapes where counting dark pixels does not.
+    Future<double> inkArea(List<InkPoint> points, double width) async {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder)
+        ..drawRect(Offset.zero & size, Paint()..color = Colors.white);
+      InkPainter(
+        strokes: <InkObject>[
+          InkStroke(
+            tool: InkTool.pen,
+            color: const Color(0xFF000000),
+            width: width,
+            pressureSensitivity: .7,
+            points: points,
+          ),
+        ],
+      ).paint(canvas, size);
+      final image = await recorder.endRecording().toImage(120, 120);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose();
+      final data = bytes!.buffer.asUint8List();
+      var area = 0.0;
+      for (var i = 0; i < 120 * 120; i++) {
+        area += (255 - data[i * 4]) / 255;
+      }
+      return area;
+    }
+
+    // A stroke renders as a single point for the frame between pen-down and
+    // the first movement. A minimum radius there used to pin that dot to
+    // ~1.5 units across, so thin pens visibly flashed a blob 3x the line
+    // width on every stroke.
+    for (final width in <double>[.5, 1, 2, 4]) {
+      final dotArea = await inkArea(
+        <InkPoint>[const InkPoint(.5, .5, .5)],
+        width,
+      );
+      final strokeArea = await inkArea(<InkPoint>[
+        const InkPoint(.2, .5, .5),
+        const InkPoint(.5, .5, .5),
+        const InkPoint(.8, .5, .5),
+      ], width);
+
+      final dotDiameter = 2 * math.sqrt(dotArea / math.pi);
+      final lineThickness = strokeArea / (size.width * .6);
+
+      expect(
+        dotDiameter,
+        lessThan(lineThickness * 1.35),
+        reason: 'pen-down dot is too fat at width $width '
+            '(${dotDiameter.toStringAsFixed(2)} vs line '
+            '${lineThickness.toStringAsFixed(2)})',
+      );
+      expect(dotArea, greaterThan(0), reason: 'dot vanished at width $width');
+    }
   });
 }
