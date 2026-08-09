@@ -1832,26 +1832,11 @@ class _EditorScreenState extends State<EditorScreen>
     final stroke = _activeStroke;
     if (stroke == null || stroke.points.isEmpty) return;
 
-    final start = stroke.points.last;
-    final dxPixels = (target.x - start.x) * size.width;
-    final dyPixels = (target.y - start.y) * size.height;
-    final distancePixels = math.sqrt(dxPixels * dxPixels + dyPixels * dyPixels);
-    if (distancePixels < .15) return;
-
-    // Keep the stabilized samples as the dominant control points. Only bridge
-    // genuinely large gaps; the painter creates the smooth curve.
-    final sampleSpacing = 3.2 + (1 - _smoothing) * 1.8;
-    final steps = (distancePixels / sampleSpacing).ceil().clamp(1, 8).toInt();
-    for (var step = 1; step <= steps; step++) {
-      final amount = step / steps;
-      stroke.points.add(
-        InkPoint(
-          start.x + (target.x - start.x) * amount,
-          start.y + (target.y - start.y) * amount,
-          start.pressure + (target.pressure - start.pressure) * amount,
-        ),
-      );
-    }
+    // Only the real stabilized sample becomes a control point. See
+    // strokeCapturePointsTowards for why the gap must not be subdivided.
+    stroke.points.addAll(
+      strokeCapturePointsTowards(stroke.points.last, target, size),
+    );
   }
 
   void _appendSmoothedPoints(PointerMoveEvent event, Size size) {

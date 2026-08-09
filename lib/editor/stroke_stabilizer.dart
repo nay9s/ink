@@ -4,6 +4,32 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 
+/// Control points to append when the stabilized pen position moves from
+/// [start] to [target].
+///
+/// This deliberately never subdivides the gap. Interpolated points would sit
+/// exactly on the straight chord between two real samples, and the renderer's
+/// spline passes through every control point — a cubic whose endpoints and
+/// tangents all lie on one line *is* that line. Filling gaps therefore pins
+/// the curve flat along each chord and turns handwriting into a polygon with
+/// rounded corners. The painter already curves between sparse control points
+/// (see createSmoothStrokePath in stroke_geometry.dart), so the correct
+/// contribution here is the single real sample.
+List<InkPoint> strokeCapturePointsTowards(
+  InkPoint start,
+  InkPoint target,
+  Size size, {
+  double minimumDistance = .15,
+}) {
+  final dxPixels = (target.x - start.x) * size.width;
+  final dyPixels = (target.y - start.y) * size.height;
+  final distancePixels = math.sqrt(dxPixels * dxPixels + dyPixels * dyPixels);
+  if (!distancePixels.isFinite || distancePixels < minimumDistance) {
+    return const <InkPoint>[];
+  }
+  return <InkPoint>[target];
+}
+
 /// A bounded, time-based low-pass filter for live pen input.
 ///
 /// The filter works in screen pixels so the selected strength feels the same
