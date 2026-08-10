@@ -53,7 +53,15 @@ void main() {
     expect(stabilizedAverage, lessThan(rawAverage * .5));
   });
 
-  test('default stabilization removes visible sample zigzags', () {
+  /// This input is deliberately extreme: +/-5px reversing on *every* sample
+  /// is a Nyquist-rate oscillation an order of magnitude larger than real
+  /// Pencil noise. It used to be held to 35% of its amplitude, which the
+  /// filter could only manage by smoothing just as hard at ordinary writing
+  /// speed — where that same smoothing was measurably bending letters out of
+  /// shape (see stabilizer_speed_test.dart). Speed-adaptive smoothing trades
+  /// some attenuation of this synthetic case for shape accuracy across every
+  /// real writing speed; it must still clearly attenuate it.
+  test('default stabilization attenuates visible sample zigzags', () {
     final stabilizer = StrokeStabilizer()
       ..start(const InkPoint(.1, .5, .5), timestamp: Duration.zero);
     final rawOffsets = <double>[];
@@ -77,7 +85,7 @@ void main() {
     final rawAverage = rawOffsets.reduce((a, b) => a + b) / rawOffsets.length;
     final stabilizedAverage =
         stabilizedOffsets.reduce((a, b) => a + b) / stabilizedOffsets.length;
-    expect(stabilizedAverage, lessThan(rawAverage * .35));
+    expect(stabilizedAverage, lessThan(rawAverage * .55));
   });
 
   test('maximum strength keeps the filtered centerline bounded', () {
