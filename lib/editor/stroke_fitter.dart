@@ -1,4 +1,4 @@
-﻿// Fits cubic Béziers to the raw pen samples of a finished stroke.
+// Fits cubic Béziers to the raw pen samples of a finished stroke.
 //
 // Filtering and fitting solve the same problem from opposite ends, and only
 // one of them can win both halves of it. A filter sees each sample as it
@@ -205,16 +205,56 @@ List<InkPoint> fitStrokePoints(
 
 /// Tolerance in screen pixels for a given smoothing setting.
 ///
-/// The floor sits just above the amplitude of ordinary hand tremor, because a
-/// tolerance below that makes the fit reproduce the tremor faithfully, which
-/// is precisely what it exists to avoid.
-/// Swept on a jittered glyph: below about 1.5px the fit starts reproducing the
-/// tremor (turning more than doubles), and above about 2.6px it stops buying
-/// smoothness and only costs faithfulness. The range here spans that band, so
-/// every setting of the slider is useful and none of them is bad.
+/// This is tuned for the averaged control points supplied by live capture, not
+/// every raw 120Hz Pencil sample. Keeping it in screen space makes an identical
+/// hand movement receive identical treatment from 0.1x through 6x zoom.
 double strokeFitTolerance(double smoothing) {
   final amount = smoothing.clamp(0.0, 1.0).toDouble();
-  return 1.5 + 1.8 * amount;
+  // Capture has already averaged one control point per short span of travel.
+  // A 1.5px floor was useful when this fitter was evaluated against every raw
+  // 120Hz sample, but it over-smoothed the cleaner captured centerline. A
+  // sweep across slow, normal and fast synthetic handwriting found the useful
+  // band to be about 1.0..2.7px, with the default setting near 1.8px: tangent
+  // jumps fall by roughly half again without pulling the curve off the hand's
+  // path by a visible amount.
+  return .95 + 1.75 * amount;
+}
+
+/// Refines a completed, already-stabilized stroke without adding live tip lag.
+///
+/// Live capture must be prefix-stable so ink never retracts under the Pencil;
+/// that necessarily limits how much it can smooth. Once the Pencil lifts the
+/// complete centerline is available, allowing a bounded curve fit that keeps
+/// both endpoints exact and removes the remaining control-point facets.
+List<InkPoint> finishSmoothStroke(
+  List<InkPoint> captured,
+  Size screenSize, {
+  required double smoothing,
+}) {
+  final amount = smoothing.clamp(0.0, 1.0).toDouble();
+  if (amount <= 0 || captured.length < 4) {
+    return List<InkPoint>.of(captured);
+  }
+
+  final fitted = fitStrokePoints(
+    captured,
+    screenSize,
+    tolerancePx: strokeFitTolerance(amount),
+  );
+  if (fitted.length < 2 ||
+      fitted.any(
+        (point) =>
+            !point.x.isFinite || !point.y.isFinite || !point.pressure.isFinite,
+      )) {
+    return List<InkPoint>.of(captured);
+  }
+
+  // The fitter is expected to preserve these already, but assigning the
+  // authored endpoints here makes that contract explicit and protects stored
+  // ink against tiny floating-point drift in future fitting changes.
+  fitted[0] = captured.first;
+  fitted[fitted.length - 1] = captured.last;
+  return fitted;
 }
 
 /// Indices where the stroke turns hard enough to be a deliberate corner.
@@ -284,11 +324,30 @@ Offset? _walkForward(List<Offset> pixels, int index, double spanPx) {
 
 List<StrokeCubic> _fitCubics(List<Offset> points, double tolerancePx) {
   if (points.length < 2) return const <StrokeCubic>[];
-  final leftTangent = _normalized(points[1] - points.first);
-  final rightTangent = _normalized(
-    points[points.length - 2] - points.last,
-  );
+  final leftTangent = _endpointTangent(points, fromStart: true);
+  final rightTangent = _endpointTangent(points, fromStart: false);
   return _fitRecursive(points, leftTangent, rightTangent, tolerancePx, 0);
+}
+
+Offset _endpointTangent(
+  List<Offset> points, {
+  required bool fromStart,
+  double spanPx = 8,
+}) {
+  final endpoint = fromStart ? points.first : points.last;
+  var index = fromStart ? 0 : points.length - 1;
+  var travelled = 0.0;
+  while (fromStart ? index < points.length - 1 : index > 0) {
+    final next = fromStart ? index + 1 : index - 1;
+    travelled += (points[next] - points[index]).distance;
+    index = next;
+    if (travelled >= spanPx) break;
+  }
+  final tangent = _normalized(points[index] - endpoint);
+  if (tangent != Offset.zero) return tangent;
+  return fromStart
+      ? _normalized(points[1] - points.first)
+      : _normalized(points[points.length - 2] - points.last);
 }
 
 List<StrokeCubic> _fitRecursive(
@@ -332,9 +391,13 @@ List<StrokeCubic> _fitRecursive(
     return <StrokeCubic>[curve];
   }
 
-  final centerTangent = _normalized(
-    points[splitIndex - 1] - points[splitIndex + 1],
-  );
+  // Estimate the shared tangent across a real span of travel. Using only the
+  // two samples beside the split makes the join direction almost entirely a
+  // measurement of their residual sub-pixel noise; both cubics then agree on
+  // that wrong direction and create a narrow but very visible kink. A chord
+  // across several pixels lets the noise cancel while keeping one common
+  // tangent on the two fitted halves.
+  final centerTangent = _splitTangent(points, splitIndex);
   return <StrokeCubic>[
     ..._fitRecursive(
       points.sublist(0, splitIndex + 1),
@@ -351,6 +414,26 @@ List<StrokeCubic> _fitRecursive(
       depth + 1,
     ),
   ];
+}
+
+Offset _splitTangent(List<Offset> points, int index, {double spanPx = 8}) {
+  var left = index;
+  var travelled = 0.0;
+  while (left > 0 && travelled < spanPx) {
+    travelled += (points[left] - points[left - 1]).distance;
+    left--;
+  }
+
+  var right = index;
+  travelled = 0.0;
+  while (right < points.length - 1 && travelled < spanPx) {
+    travelled += (points[right + 1] - points[right]).distance;
+    right++;
+  }
+
+  final tangent = _normalized(points[left] - points[right]);
+  if (tangent != Offset.zero) return tangent;
+  return _normalized(points[index - 1] - points[index + 1]);
 }
 
 /// Least-squares solve for the two interior control points, with the ends and

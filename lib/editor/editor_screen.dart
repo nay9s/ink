@@ -34,6 +34,7 @@ import 'pdf_zoom_out_size_delegate.dart';
 import 'selection_toolbar_layout.dart';
 import 'selection_transform.dart';
 import 'shape_recognizer.dart';
+import 'stroke_fitter.dart';
 import 'stroke_stabilizer.dart';
 import 'toolbar.dart';
 import 'toolbar_docking.dart';
@@ -3430,6 +3431,23 @@ class _EditorScreenState extends State<EditorScreen>
     } else {
       _activeStrokeHasRawTip = false;
       _resetStrokeCapture();
+    }
+
+    // Live ink stays prefix-stable and reaches the exact Pencil tip. Once the
+    // gesture is complete, use the whole captured centerline to remove the
+    // small facets an online filter cannot see ahead far enough to avoid.
+    // Fitting in screen pixels makes the result consistent at every zoom.
+    if (finishingStroke != null &&
+        size != null &&
+        event is! PointerCancelEvent &&
+        !_shapeSnapPreview &&
+        _usesStrokeStabilizer(finishingStroke)) {
+      final fittedPoints = finishSmoothStroke(
+        finishingStroke.points,
+        _stabilizerScreenSize(size),
+        smoothing: _smoothing,
+      );
+      _activeStroke = finishingStroke.copyWith(points: fittedPoints);
     }
     setState(() {
       if (_tool == InkTool.lasso &&
